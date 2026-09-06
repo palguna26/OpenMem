@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from functools import lru_cache
 
 from ..config.settings import RETRIEVAL as _RETRIEVAL_SETTINGS
+from ..models import TemporalQuery  # shared definition; re-exported for backward compat
 from ..storage.db import Database
 from .embedding import EmbeddingProvider, FastEmbedProvider, cosine
 
@@ -24,18 +25,38 @@ HISTORY_RE = re.compile(r"\b(previously|used to|former|formerly|before|previous|
 _HAYSTACK_DATE_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2}).*?(\d{2}):(\d{2})")
 _YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 _MONTH_YEAR_RE = re.compile(
-    r"\b(january|february|march|april|may|june|july|august|september|october|november|december)"
+    r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    r"\s+((?:19|20)\d{2})\b",
+    re.I,
+)
+_ISO_DAY_RE = re.compile(r"\b((?:19|20)\d{2})[-/](\d{2})[-/](\d{2})\b")
+_MONTH_DAY_YEAR_RE = re.compile(
+    r"\b(january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
+    r"\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d{2})\b",
+    re.I,
+)
+_DAY_MONTH_YEAR_RE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"(january|february|march|april|may|june|july|august|september|october|november|december"
+    r"|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
     r"\s+((?:19|20)\d{2})\b",
     re.I,
 )
 _MONTHS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
     "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 _LATEST_RE = re.compile(r"\b(latest|current|currently|now|newest|recent|today|present)\b", re.I)
 _EARLIEST_RE = re.compile(r"\b(first|earliest|initial|original|oldest)\b", re.I)
+_FIRST_NAME_RE = re.compile(r"\bfirst\s+names?\b", re.I)
 _BEFORE_RE = re.compile(r"\b(before|prior to|until|up to|previously|used to|former|formerly|previous)\b", re.I)
 _AFTER_RE = re.compile(r"\b(after|since|from|following)\b", re.I)
+_SINCE_RE = re.compile(r"\bsince\b", re.I)
+_AFTER_WORD_RE = re.compile(r"\b(after|following)\b", re.I)
 _AROUND_RE = re.compile(r"\b(around|about|in|during|at the time of|when)\b", re.I)
 _MULTI_RE = re.compile(r"\b(across|between|each|all|every|multiple|over time|throughout|compare)\b", re.I)
 
@@ -45,21 +66,19 @@ _PREF_NEGATIVE_RE = re.compile(r"\b(dislike|dislikes|disliked|hate|hates|hated|a
 _PREF_UPDATE_RE = re.compile(r"\b(no longer|used to|previously|before|now|instead|switched|changed to|moved to)\b", re.I)
 
 
-@dataclass(frozen=True)
-class TemporalQuery:
-    reference_date: datetime | None
-    intent: str  # latest|historical|earliest|before|after|around|none
-    target_date: datetime | None = None
-    date_range_start: datetime | None = None
-    date_range_end: datetime | None = None
-
-
 def parse_reference_date(value: str | datetime | None) -> datetime | None:
-    """Parse LongMemEval question_date / haystack dates into UTC datetimes."""
+    """Parse LongMemEval question_date / haystack dates into UTC datetimes.
+
+    Timezone-aware values are normalized to UTC. Naive datetimes and naive
+    ISO strings are assumed to already be UTC (documented default; no clock
+    is consulted). Returns ``None`` for absent/empty/unparseable input.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
     text = str(value).strip()
     if not text:
         return None
@@ -72,9 +91,41 @@ def parse_reference_date(value: str | datetime | None) -> datetime | None:
             pass
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
     except ValueError:
         return None
+
+
+def _utc_now() -> datetime:
+    """Clock source for absent references; patchable in tests."""
+    return datetime.now(UTC)
+
+
+def resolve_reference_time(value: str | datetime | None) -> datetime:
+    """Resolve one reference time per search, normalized to UTC.
+
+    - ``None`` or blank string (absent): capture a single ``now(UTC)`` for
+      ordinary production search. Callers must capture once and reuse it for
+      all filtering and scoring in that search.
+    - Explicit valid value: parse and normalize aware values to UTC; naive
+      values are assumed UTC.
+    - Explicit invalid (non-blank unparseable): raise ``ValueError``.
+    """
+    if value is None:
+        return _utc_now()
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    text = str(value).strip()
+    if not text:
+        return _utc_now()
+    parsed = parse_reference_date(text)
+    if parsed is None:
+        raise ValueError(f"invalid reference_date: {value!r}")
+    return parsed
 
 
 def parse_temporal_query(query: str, reference_date: str | datetime | None = None) -> TemporalQuery:
@@ -82,11 +133,26 @@ def parse_temporal_query(query: str, reference_date: str | datetime | None = Non
 
     ``reference_date`` is the benchmark ``question_date`` — never the machine
     clock — so "current" means valid at question time.
+
+    Explicit dates become ``[start, end)`` intervals (inclusive start,
+    exclusive end):
+    - month ``March 2023`` -> ``[2023-03-01, 2023-04-01)``
+    - year ``2023`` -> ``[2023-01-01, 2024-01-01)``
+    - day ``March 10, 2023`` / ``2023-03-10`` -> ``[day 00:00, next day 00:00)``
+    Directional targets derive from the interval, never a midpoint:
+    - ``before`` -> ``start`` (strictly earlier than the period)
+    - ``after`` -> ``end`` (period end onward)
+    - ``since`` -> ``start`` (period start onward)
+    Missing/invalid dates leave range/target as ``None``.
     """
+    from datetime import timedelta as _timedelta
+
     ref = parse_reference_date(reference_date)
     ql = query.casefold()
     intent = "none"
-    if _EARLIEST_RE.search(query):
+    # "first name" is an attribute, not an earliest-event request.
+    query_for_earliest = _FIRST_NAME_RE.sub(" ", query)
+    if _EARLIEST_RE.search(query_for_earliest):
         intent = "earliest"
     elif _LATEST_RE.search(query):
         intent = "latest"
@@ -97,37 +163,87 @@ def parse_temporal_query(query: str, reference_date: str | datetime | None = Non
             intent = "before"
         else:
             intent = "historical"
-    elif re.search(r"\b(after|since|following)\b", query, re.I):
+    elif _SINCE_RE.search(query):
+        intent = "since"
+    elif _AFTER_WORD_RE.search(query):
         intent = "after"
-    elif _YEAR_RE.search(query) or _MONTH_YEAR_RE.search(query):
+    elif _YEAR_RE.search(query) or _MONTH_YEAR_RE.search(query) or _ISO_DAY_RE.search(query):
         intent = "around"
 
-    target: datetime | None = None
     range_start: datetime | None = None
     range_end: datetime | None = None
-    month_match = _MONTH_YEAR_RE.search(query)
-    if month_match:
+
+    def _month_end(year: int, month: int) -> datetime | None:
         try:
-            month = _MONTHS[month_match.group(1).casefold()]
-            year = int(month_match.group(2))
-            range_start = datetime(year, month, 1, tzinfo=UTC)
             if month == 12:
-                range_end = datetime(year + 1, 1, 1, tzinfo=UTC)
-            else:
-                range_end = datetime(year, month + 1, 1, tzinfo=UTC)
-            target = range_start + (range_end - range_start) / 2
+                return datetime(year + 1, 1, 1, tzinfo=UTC)
+            return datetime(year, month + 1, 1, tzinfo=UTC)
         except ValueError:
-            pass
+            return None
+
+    # Most specific first: ISO day > English day > month-year > year.
+    iso_match = _ISO_DAY_RE.search(query)
+    if iso_match:
+        try:
+            year, month, day = int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3))
+            start = datetime(year, month, day, tzinfo=UTC)
+            range_start = start
+            range_end = start + _timedelta(days=1)
+        except ValueError:
+            range_start = None
+            range_end = None
     else:
-        years = [int(v) for v in _YEAR_RE.findall(query)]
-        if years:
-            year = years[0]
+        md_match = _MONTH_DAY_YEAR_RE.search(query)
+        dm_match = None if md_match else _DAY_MONTH_YEAR_RE.search(query)
+        day_match = md_match or dm_match
+        if day_match:
             try:
-                range_start = datetime(year, 1, 1, tzinfo=UTC)
-                range_end = datetime(year + 1, 1, 1, tzinfo=UTC)
-                target = datetime(year, 7, 1, tzinfo=UTC)
-            except ValueError:
-                pass
+                if md_match:
+                    month = _MONTHS[day_match.group(1).casefold()]
+                    day = int(day_match.group(2))
+                    year = int(day_match.group(3))
+                else:
+                    day = int(day_match.group(1))
+                    month = _MONTHS[day_match.group(2).casefold()]
+                    year = int(day_match.group(3))
+                start = datetime(year, month, day, tzinfo=UTC)
+                range_start = start
+                range_end = start + _timedelta(days=1)
+            except (ValueError, KeyError):
+                range_start = None
+                range_end = None
+        else:
+            month_match = _MONTH_YEAR_RE.search(query)
+            if month_match:
+                try:
+                    month = _MONTHS[month_match.group(1).casefold()]
+                    year = int(month_match.group(2))
+                    range_start = datetime(year, month, 1, tzinfo=UTC)
+                    range_end = _month_end(year, month)
+                    if range_end is None:
+                        range_start = None
+                except (ValueError, KeyError):
+                    range_start = None
+                    range_end = None
+            else:
+                years = [int(v) for v in _YEAR_RE.findall(query)]
+                if years:
+                    year = years[0]
+                    try:
+                        range_start = datetime(year, 1, 1, tzinfo=UTC)
+                        range_end = datetime(year + 1, 1, 1, tzinfo=UTC)
+                    except ValueError:
+                        range_start = None
+                        range_end = None
+    # Directional boundary, never a midpoint.
+    target: datetime | None = None
+    if range_start is not None and range_end is not None:
+        if intent == "before":
+            target = range_start
+        elif intent == "after":
+            target = range_end
+        elif intent == "since":
+            target = range_start
     return TemporalQuery(
         reference_date=ref,
         intent=intent,
@@ -137,36 +253,77 @@ def parse_temporal_query(query: str, reference_date: str | datetime | None = Non
     )
 
 
+def _to_utc(value: datetime | None) -> datetime | None:
+    """Normalize to UTC; naive values are assumed UTC (documented default)."""
+    if value is None:
+        return None
+    try:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    except Exception:
+        return None
+
+
 def temporal_atom_boost(atom_timestamp: str | None, tq: TemporalQuery) -> float:
-    """Small ranking boost (not a hard filter) from temporal alignment."""
+    """Small ranking boost (not a hard filter) from temporal alignment.
+
+    All comparisons normalize to UTC first; naive values are assumed UTC.
+    """
     if tq.intent == "none":
         return 0.0
-    atom_dt = parse_reference_date(atom_timestamp)
+    atom_dt = _to_utc(parse_reference_date(atom_timestamp))
     if atom_dt is None:
-        return -0.01 if tq.intent in {"around", "before", "after"} else 0.0
+        # Explicit missing-date handling: penalize unknown only when the query
+        # carries an explicit temporal constraint; otherwise neutral.
+        if tq.intent == "around" and tq.date_range_start and tq.date_range_end:
+            return -0.01
+        if tq.intent in {"before", "after", "since"} and (
+            tq.target_date or tq.date_range_start or tq.date_range_end
+        ):
+            return -0.01
+        return 0.0
     if tq.intent == "around" and tq.date_range_start and tq.date_range_end:
-        if tq.date_range_start <= atom_dt < tq.date_range_end:
+        start = _to_utc(tq.date_range_start)
+        end = _to_utc(tq.date_range_end)
+        if start is None or end is None:
+            return 0.0
+        if start <= atom_dt < end:
             return 0.08
         # Near-miss decay: within 90 days still gets partial credit.
         try:
-            gap = min(abs((atom_dt - tq.date_range_start).days), abs((atom_dt - tq.date_range_end).days))
+            gap = min(abs((atom_dt - start).days), abs((atom_dt - end).days))
             if gap <= 90:
                 return 0.04 * (1.0 - gap / 90.0)
         except Exception:
             pass
         return 0.0
     if tq.intent == "before" and tq.target_date:
-        return 0.05 if atom_dt < tq.target_date else -0.02
+        target = _to_utc(tq.target_date)
+        if target is None:
+            return 0.0
+        return 0.05 if atom_dt < target else -0.02
     if tq.intent == "after" and tq.target_date:
-        return 0.05 if atom_dt >= tq.target_date else -0.02
-    if tq.intent == "after" and tq.reference_date:
-        # "since X" without explicit target: prefer evidence near reference.
+        target = _to_utc(tq.target_date)
+        if target is None:
+            return 0.0
+        return 0.05 if atom_dt >= target else -0.02
+    if tq.intent == "since" and tq.target_date:
+        target = _to_utc(tq.target_date)
+        if target is None:
+            return 0.0
+        return 0.05 if atom_dt >= target else -0.02
+    if tq.intent in {"after", "since"} and tq.reference_date:
+        # Directional query without an explicit date: no boost, no clock use.
         return 0.0
     if tq.intent == "latest" and tq.reference_date:
+        ref = _to_utc(tq.reference_date)
+        if ref is None:
+            return 0.0
         # Prefer facts valid at question time; future-dated atoms are suspect.
-        if atom_dt <= tq.reference_date:
+        if atom_dt <= ref:
             try:
-                age_days = max(0.0, (tq.reference_date - atom_dt).total_seconds() / 86400)
+                age_days = max(0.0, (ref - atom_dt).total_seconds() / 86400)
                 return max(0.0, 0.05 * (1.0 - min(age_days, 365.0) / 365.0))
             except Exception:
                 return 0.02
@@ -396,11 +553,10 @@ def search_atoms_with_stages(
                 rescored.append(AtomHit(hit.atom_id, hit.session_id, hit.fact, hit.timestamp, hit.source_role, hit.score + boost))
             else:
                 rescored.append(hit)
-        # "earliest" intent sorts by timestamp ascending as tie-break.
+        # "earliest": relevance primary; ascending timestamps break equal-score
+        # ties with unknown dates last.
         if tq.intent == "earliest":
-            merged = sorted(rescored, key=lambda h: (-h.score + 0.0001 * _timestamp_rank(h.timestamp), h.atom_id))
-            # Apply stable earliest-first for near-ties: sort by timestamp when scores close.
-            merged = sorted(merged, key=lambda h: (_timestamp_rank(h.timestamp), -h.score))
+            merged = sorted(rescored, key=lambda h: (-h.score, _timestamp_rank(h.timestamp), h.atom_id))
         else:
             merged = sorted(rescored, key=lambda h: (-h.score, h.atom_id))
     stages["temporal_ms"] = (time.perf_counter() - started) * 1000

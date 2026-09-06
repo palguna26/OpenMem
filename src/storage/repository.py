@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -22,6 +23,7 @@ from ..memory.provider import SessionSummaryProvider
 from ..models import EventInput, EvidenceCitation, ExtractionCandidate, MemoryResponse, SearchResult, SessionSearchResult, temporal_recency_score, temporal_valid_at_score
 from ..retrieval.embedding import EmbeddingProvider, FastEmbedProvider, batch_dot, pack_embedding
 from ..retrieval.retrieval import parse_temporal_query as _parse_temporal_query
+from ..retrieval.retrieval import resolve_reference_time as _resolve_reference_time
 from .db import Database
 from .vector_index import SQLiteVecIndex
 
@@ -1745,6 +1747,33 @@ class Repository:
             for event_id in chunk_event_map.get(chunk_id, []):
                 for vid in event_version_map.get(event_id, []):
                     memory_chunk_scores[vid] = max(memory_chunk_scores.get(vid, 0.0), cscore)
+        # Lifecycle exclusion: chunk-derived candidates must never surface
+        # deleted/invalidated versions in either search mode. Ordinary-mode
+        # active-only filtering is enforced again in final results.
+        if memory_chunk_scores:
+            try:
+                _chunk_ids = list(memory_chunk_scores)
+                _place = ",".join("?" for _ in _chunk_ids)
+                _allowed_chunk = {
+                    str(row["id"])
+                    for row in self.db.execute(
+                        f"""SELECT v.id AS id FROM memory_versions v
+                        JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
+                        WHERE v.namespace_id=? AND v.id IN ({_place})
+                          AND v.status NOT IN ('deleted', 'invalidated')
+                          AND m.status NOT IN ('deleted', 'invalidated')""",
+                        (namespace_id, *_chunk_ids),
+                    ).fetchall()
+                }
+                memory_chunk_scores = {vid: score for vid, score in memory_chunk_scores.items() if vid in _allowed_chunk}
+            except Exception:
+                # Fail closed: never retain unchecked chunk candidates.
+                logging.getLogger(__name__).warning(
+                    "lifecycle filter failed for chunk candidates in namespace %s; discarding channel",
+                    namespace_id,
+                    exc_info=True,
+                )
+                memory_chunk_scores = {}
         return memory_chunk_scores
 
     def _rerank_candidates(
@@ -1841,16 +1870,42 @@ class Repository:
         """Hybrid search with temporal, preference, and session-aware ranking.
 
         ``reference_date`` is the benchmark ``question_date`` (never the machine
-        clock).  Dates influence ranking, not hard-filtering, unless the query
-        clearly requires it.
+        clock). It is resolved once per search and used throughout filtering
+        and scoring:
+
+        - explicit valid reference: used for validity (``valid_from <= ref <
+          valid_until``) and scoring;
+        - absent (``None``/blank): one captured ``now(UTC)`` for ordinary
+          production search;
+        - explicit invalid: raises ``ValueError``.
+        Aware values normalize to UTC; naive values are assumed UTC.
+
+        Date-field interpretation (see writes in ``reconcile``/``update``):
+        - ``valid_from``/``valid_until``: real-world validity interval
+          ``[valid_from, valid_until)`` (start inclusive, expiry exclusive;
+          ``NULL`` means unbounded). Falls back to source ``occurred_at`` or
+          ingestion time when extraction omits it — a recorded fallback, not
+          a claim that ingestion equals the event date.
+        - ``valid_to``: database version history (supersession timestamp,
+          ``NULL`` for the current version), not real-world validity.
+        - ``recorded_at``: database history (ingestion time), used only as a
+          scoring fallback anchor, never for validity filtering. Historical
+          search surfaces eligible superseded/expired rows; it does not claim
+          complete snapshots.
+        Lifecycle (``deleted``/``invalidated`` on parents/versions) is always
+        excluded; ordinary adds validity at the resolved reference.
         """
+        # Resolve once; raises on explicit invalid. All SQL/scoring below uses
+        # this single instant, never julianday('now') or a fresh clock read.
+        resolved_ref = _resolve_reference_time(reference_date)
+        resolved_iso = resolved_ref.isoformat()
         # Each term becomes one SQL/FTS expression. SQLite has a hard maximum
         # expression depth, so cap user and internal transcript queries alike.
         terms = list(dict.fromkeys(term.casefold() for term in re.findall(r"[\w./:-]+", query) if len(term) > 1 and term.casefold() not in SEARCH_STOP_WORDS))[:64]
         qweights = self._query_weights(query)
         # Explicit temporal representation shared with atom retrieval.
         try:
-            tq = _parse_temporal_query(query, reference_date)
+            tq = _parse_temporal_query(query, resolved_ref)
             _valid_at_score = temporal_valid_at_score
         except Exception:
             tq = None
@@ -1874,11 +1929,13 @@ class Repository:
             match = " OR ".join(f'"{term.replace(chr(34), "")}"' for term in terms)
             if historical:
                 lexical_rows = self.db.execute(
-                    """SELECT id AS memory_version_id,
-                    CASE WHEN lower(statement) LIKE ? THEN 0 ELSE 1 END AS score
-                    FROM memory_versions WHERE namespace_id=? AND ("""
-                    + " OR ".join("lower(statement) LIKE ?" for _ in terms)
-                    + ") ORDER BY score, recorded_at DESC, id LIMIT ?",
+                    """SELECT v.id AS memory_version_id,
+                    CASE WHEN lower(v.statement) LIKE ? THEN 0 ELSE 1 END AS score
+                    FROM memory_versions v JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
+                    WHERE v.namespace_id=? AND v.status NOT IN ('deleted', 'invalidated')
+                      AND m.status NOT IN ('deleted', 'invalidated') AND ("""
+                    + " OR ".join("lower(v.statement) LIKE ?" for _ in terms)
+                    + ") ORDER BY score, v.recorded_at DESC, v.id LIMIT ?",
                     (f"%{query.casefold()}%", namespace_id, *(f"%{term}%" for term in terms), overfetch),
                 ).fetchall()
             else:
@@ -1897,22 +1954,63 @@ class Repository:
             query_vector = self.embedding.embed(query)
             indexed_rows = self.vector_index.search(namespace_id, query_vector, overfetch)
             if indexed_rows:
+                # Indexed embeddings persist after forget/invalidate; filter
+                # deleted/invalidated versions so they never reach results.
+                # Note: filtering happens after the index top-N, so excluded
+                # rows still consume candidate budget; replenishment is a
+                # separate task. Ordinary-mode active-only filtering is
+                # enforced again in final results.
+                try:
+                    _indexed_ids = [str(memory_id) for memory_id, _ in indexed_rows]
+                    if _indexed_ids:
+                        _place = ",".join("?" for _ in _indexed_ids)
+                        _allowed = {
+                            str(row["id"])
+                            for row in self.db.execute(
+                                f"""SELECT v.id AS id FROM memory_versions v
+                                JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
+                                WHERE v.namespace_id=? AND v.id IN ({_place})
+                                  AND v.status NOT IN ('deleted', 'invalidated')
+                                  AND m.status NOT IN ('deleted', 'invalidated')""",
+                                (namespace_id, *_indexed_ids),
+                            ).fetchall()
+                        }
+                        indexed_rows = [(memory_id, score) for memory_id, score in indexed_rows if str(memory_id) in _allowed]
+                except Exception:
+                    # Fail closed: never retain unchecked indexed candidates.
+                    logging.getLogger(__name__).warning(
+                        "lifecycle filter failed for indexed vector candidates in namespace %s; discarding channel",
+                        namespace_id,
+                        exc_info=True,
+                    )
+                    indexed_rows = []
                 ordered_vector = [(memory_id, score) for memory_id, score in indexed_rows if score >= 0.6]
                 vector_rank = {memory_id: index for index, (memory_id, score) in enumerate(ordered_vector, start=1)}
                 vector = {memory_id: score for memory_id, score in ordered_vector}
         except Exception:
             query_vector = None
         if not vector and query_vector is not None:
-            vector_rows = self.db.execute(
-                """SELECT e.memory_version_id, e.vector
-                FROM memory_embeddings e JOIN memory_versions v ON v.id=e.memory_version_id AND v.namespace_id=e.namespace_id
-                JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
-                WHERE e.namespace_id=? AND e.provider=? AND e.dimensions=? AND (? OR (v.status='active' AND m.status='active'
-                  AND m.accessibility >= 0.05 AND v.valid_to IS NULL
-                  AND (v.valid_from IS NULL OR julianday(v.valid_from) <= julianday('now'))
-                  AND (v.valid_until IS NULL OR julianday(v.valid_until) > julianday('now'))))""",
-                (namespace_id, self.embedding.name, self.embedding.dimensions, historical),
-            ).fetchall()
+            if historical:
+                vector_rows = self.db.execute(
+                    """SELECT e.memory_version_id, e.vector
+                    FROM memory_embeddings e JOIN memory_versions v ON v.id=e.memory_version_id AND v.namespace_id=e.namespace_id
+                    JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
+                    WHERE e.namespace_id=? AND e.provider=? AND e.dimensions=?
+                      AND v.status NOT IN ('deleted', 'invalidated')
+                      AND m.status NOT IN ('deleted', 'invalidated')""",
+                    (namespace_id, self.embedding.name, self.embedding.dimensions),
+                ).fetchall()
+            else:
+                vector_rows = self.db.execute(
+                    """SELECT e.memory_version_id, e.vector
+                    FROM memory_embeddings e JOIN memory_versions v ON v.id=e.memory_version_id AND v.namespace_id=e.namespace_id
+                    JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
+                    WHERE e.namespace_id=? AND e.provider=? AND e.dimensions=? AND (v.status='active' AND m.status='active'
+                      AND m.accessibility >= 0.05 AND v.valid_to IS NULL
+                      AND (v.valid_from IS NULL OR julianday(v.valid_from) <= julianday(?))
+                      AND (v.valid_until IS NULL OR julianday(v.valid_until) > julianday(?)))""",
+                    (namespace_id, self.embedding.name, self.embedding.dimensions, resolved_iso, resolved_iso),
+                ).fetchall()
             if vector_rows:
                 try:
                     scores = batch_dot(query_vector, [bytes(row["vector"]) for row in vector_rows], self.embedding.dimensions)
@@ -1960,7 +2058,11 @@ class Repository:
                 f"""SELECT DISTINCT r.memory_version_id, MIN(ea.alias) AS alias
                 FROM relationships r
                 JOIN entity_aliases ea ON ea.entity_id IN (r.subject_entity_id, r.object_entity_id)
+                JOIN memory_versions v ON v.id=r.memory_version_id AND v.namespace_id=r.namespace_id
+                JOIN memories m ON m.id=v.memory_id AND m.namespace_id=v.namespace_id
                 WHERE r.namespace_id=? AND ea.namespace_id=? AND r.memory_version_id IS NOT NULL
+                  AND v.status NOT IN ('deleted', 'invalidated')
+                  AND m.status NOT IN ('deleted', 'invalidated')
                   AND ({alias_match})
                 GROUP BY r.memory_version_id
                 ORDER BY r.memory_version_id""",
@@ -1971,15 +2073,25 @@ class Repository:
         if not candidate_ids:
             return []
         placeholders = ",".join("?" for _ in candidate_ids)
-        rows = self.db.execute(
-            f"""SELECT m.id, m.kind, m.confidence, m.importance, v.id AS version_id, v.statement, v.status, v.valid_from, v.valid_to, v.recorded_at, v.source_event_id, v.evidence_excerpt
-            FROM memory_versions v JOIN memories m ON m.id=v.memory_id AND m.namespace_id=?
-            WHERE v.namespace_id=? AND v.id IN ({placeholders}) AND (? OR (v.status='active' AND m.status='active'
-              AND m.accessibility >= 0.05 AND v.valid_to IS NULL
-              AND (v.valid_from IS NULL OR julianday(v.valid_from) <= julianday('now'))
-              AND (v.valid_until IS NULL OR julianday(v.valid_until) > julianday('now'))))""",
-            (namespace_id, namespace_id, *candidate_ids, historical),
-        ).fetchall()
+        if historical:
+            rows = self.db.execute(
+                f"""SELECT m.id, m.kind, m.confidence, m.importance, v.id AS version_id, v.statement, v.status, v.valid_from, v.valid_to, v.valid_until, v.recorded_at, v.source_event_id, v.evidence_excerpt
+                FROM memory_versions v JOIN memories m ON m.id=v.memory_id AND m.namespace_id=?
+                WHERE v.namespace_id=? AND v.id IN ({placeholders})
+                  AND v.status NOT IN ('deleted', 'invalidated')
+                  AND m.status NOT IN ('deleted', 'invalidated')""",
+                (namespace_id, namespace_id, *candidate_ids),
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                f"""SELECT m.id, m.kind, m.confidence, m.importance, v.id AS version_id, v.statement, v.status, v.valid_from, v.valid_to, v.valid_until, v.recorded_at, v.source_event_id, v.evidence_excerpt
+                FROM memory_versions v JOIN memories m ON m.id=v.memory_id AND m.namespace_id=?
+                WHERE v.namespace_id=? AND v.id IN ({placeholders}) AND (v.status='active' AND m.status='active'
+                  AND m.accessibility >= 0.05 AND v.valid_to IS NULL
+                  AND (v.valid_from IS NULL OR julianday(v.valid_from) <= julianday(?))
+                  AND (v.valid_until IS NULL OR julianday(v.valid_until) > julianday(?)))""",
+                (namespace_id, namespace_id, *candidate_ids, resolved_iso, resolved_iso),
+            ).fetchall()
         # Debt 2 & 5 fix: removed per-hit graph/summary N+1 queries.
         # Hybrid retrieval is now strictly FTS + Vector + Temporal recency.
         # Graph/episode signals are gated behind explicit extension flag and
@@ -2052,14 +2164,16 @@ class Repository:
             if historical and row["valid_to"] is not None:
                 history = 0.02 if prefer_oldest else 0.01
             # Temporal versioning: explicit TemporalQuery over valid_from /
-            # valid_until / recorded_at anchored at question_date (Phase 2).
+            # valid_until (real-world) / recorded_at (DB-history fallback) anchored
+            # at the resolved reference. valid_to (supersession history) is used
+            # only for the history bonus above, never as real-world expiry.
             temporal_boost = 0.0
             if tq is not None and _valid_at_score is not None:
                 try:
                     temporal_boost = float(
                         _valid_at_score(
                             _parse_dt(row["valid_from"]),
-                            _parse_dt(row["valid_to"]),
+                            _parse_dt(row["valid_until"]),
                             _parse_dt(row["recorded_at"]),
                             tq,
                         )
@@ -2078,12 +2192,11 @@ class Repository:
                 recorded = str(row["recorded_at"] or "")
                 if any(str(year) in valid_from or str(year) in valid_to or str(year) in recorded for year in query_years):
                     year_match = 0.05
-            # Recency anchored at reference_date for latest queries, else machine now.
+            # Recency uses the single resolved reference for this search, never the clock.
             recency = 0.0
             try:
                 if row["valid_from"]:
-                    anchor_now = tq.reference_date if (tq is not None and tq.reference_date and prefer_latest) else None
-                    recency = temporal_recency_score(datetime.fromisoformat(str(row["valid_from"])), now=anchor_now) if anchor_now else temporal_recency_score(datetime.fromisoformat(str(row["valid_from"])))
+                    recency = temporal_recency_score(datetime.fromisoformat(str(row["valid_from"])), now=resolved_ref)
                     if prefer_latest:
                         recency *= 1.5
             except Exception:
@@ -2135,7 +2248,7 @@ class Repository:
             _tb = 0.0
             if tq is not None and _valid_at_score is not None:
                 try:
-                    _tb = float(_valid_at_score(_parse_dt(row["valid_from"]), _parse_dt(row["valid_to"]), _parse_dt(row["recorded_at"]), tq))
+                    _tb = float(_valid_at_score(_parse_dt(row["valid_from"]), _parse_dt(row["valid_until"]), _parse_dt(row["recorded_at"]), tq))
                 except Exception:
                     _tb = 0.0
             _pb = 0.0
@@ -2172,7 +2285,7 @@ class Repository:
                         "exact_match": float(query.casefold() in str(row["statement"]).casefold()),
                         "temporal_boost": round(_tb, 6),
                         "preference_boost": round(_pb, 6),
-                        "recency": round(temporal_recency_score(datetime.fromisoformat(str(row["valid_from"]))) if row["valid_from"] else 0.0, 6) if row["valid_from"] else 0.0,
+                        "recency": round(temporal_recency_score(datetime.fromisoformat(str(row["valid_from"])), now=resolved_ref) if row["valid_from"] else 0.0, 6) if row["valid_from"] else 0.0,
                         "reranker": 0.0,
                         "graph_proximity": 0.0,
                         "session_summary": 0.0,

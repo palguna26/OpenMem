@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -165,17 +166,17 @@ class TermyteDB:
         """Search original conversation sessions as a fallback to memory search."""
         return self.repository.search_sessions(namespace_id, query, limit)
 
-    def search_context(self, namespace_id: str, query: str, limit: int = 20) -> dict[str, list[Any]]:
+    def search_context(self, namespace_id: str, query: str, limit: int = 20, reference_date: str | datetime | None = None) -> dict[str, list[Any]]:
         """Return compact memories and their source chunks for answer generation."""
-        memories = self.search(namespace_id, query, limit)
+        memories = self.search(namespace_id, query, limit, reference_date=reference_date)
         from .retrieval.context import pack_evidence
 
         packed = pack_evidence(memories, lambda memory: self.repository.chunks_for_events(namespace_id, [str(x) for x in memory.source_event_ids]))
         sessions = [] if memories else self.search_sessions(namespace_id, query, limit)
         return {"memories": memories, "chunks": packed["memories"], "text": packed["text"], "token_count": packed["token_count"], "sessions": sessions}
 
-    def build_answer_context(self, namespace_id: str, query: str, limit: int = 6, token_budget: int = 1200) -> dict[str, Any]:
-        memories = self.search(namespace_id, query, limit)
+    def build_answer_context(self, namespace_id: str, query: str, limit: int = 6, token_budget: int = 1200, reference_date: str | datetime | None = None) -> dict[str, Any]:
+        memories = self.search(namespace_id, query, limit, reference_date=reference_date)
         from .retrieval.context import pack_evidence
 
         return pack_evidence(memories, lambda memory: self.repository.chunks_for_events(namespace_id, [str(x) for x in memory.source_event_ids]), token_budget=token_budget)
@@ -288,12 +289,9 @@ class TermyteDB:
         limit: int = 10,
         historical: bool = False,
         *,
-        reference_date: str | None = None,
+        reference_date: str | datetime | None = None,
     ) -> list[SearchResult]:
-        from datetime import datetime as _datetime
-
-        ref: str | _datetime | None = reference_date
-        results = self.repository.search(namespace_id, query, limit, historical, reference_date=ref)  # type: ignore[arg-type]
+        results = self.repository.search(namespace_id, query, limit, historical, reference_date=reference_date)
         log(
             self.logger,
             logging.INFO,

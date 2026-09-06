@@ -287,6 +287,30 @@ def _resolve_v3_candidates(
     return resolved, rejected
 
 
+def _validate_evidence_contract(
+    namespace_id: str,
+    candidate: Any,
+    included: dict[Any, str],
+    included_chunks: set[str] | None,
+) -> Any:
+    """Single evidence contract for direct and queued processing.
+
+    Requires source evidence and validates source-event membership, exact
+    excerpt offsets, and supplied chunk IDs. Raises ``CandidateRejected`` with
+    an explicit reason; never substitutes a fallback event.
+    """
+    validated = validate_candidate(
+        namespace_id,
+        candidate,
+        included,  # type: ignore[arg-type]
+        included_chunks=included_chunks,
+        require_evidence=True,
+    )
+    if not candidate.evidence:
+        raise CandidateRejected("missing_source_evidence")
+    return validated
+
+
 def _ensure_stage_column(repo: Repository) -> None:
     try:
         cols = {row[1] for row in repo.db.execute("PRAGMA table_info(extraction_runs)").fetchall()}
@@ -764,18 +788,15 @@ class Processor:
                         candidate = candidate.model_copy(update={"intent": "ignore"})
                     if action not in allowed_intents:
                         raise CandidateRejected("invalid_intent")
-                    validated = validate_candidate(
+                    validated = _validate_evidence_contract(
                         namespace_id,
                         candidate,
                         included,
-                        included_chunks=valid_chunks_for_validation,
-                        require_evidence=True,
+                        valid_chunks_for_validation,
                     )
                     if validated.fingerprint in fingerprints:
                         raise CandidateRejected("duplicate_candidate")
                     fingerprints.add(validated.fingerprint)
-                    if not candidate.evidence:
-                        raise CandidateRejected("missing_source_evidence")
                     # For v3 multi-event, allow any evidence event that is extractable
                     if extraction_schema == "v3":
                         # pick latest source event among evidence for observed_at
@@ -1122,28 +1143,34 @@ class Processor:
                             candidate = candidate.model_copy(update={"intent": "ignore"})
                         if action not in allowed_intents:
                             raise CandidateRejected("invalid_intent")
-                        validated = validate_candidate(namespace_id, candidate, included, included_chunks=valid_chunks_batch_set)
+                        validated = _validate_evidence_contract(
+                            namespace_id, candidate, included, valid_chunks_batch_set
+                        )
                         if validated.fingerprint in fingerprints:
                             raise CandidateRejected("duplicate_candidate")
                         fingerprints.add(validated.fingerprint)
-                        if candidate.evidence:
+                        # Evidence must come from the extractable batch; never
+                        # substitute an arbitrary first event.
+                        if extraction_schema_batch == "v3":
                             # For v3 multi-event, pick latest extractable evidence event
-                            if extraction_schema_batch == "v3":
-                                pick = None
-                                latest_ts = ""
-                                for span in candidate.evidence:
-                                    key = str(span.event_id)
-                                    if key in current_jobs:
-                                        ev_row = current_jobs[key][1]
-                                        ts = str(ev_row["occurred_at"] or "")
-                                        if ts >= latest_ts:
-                                            latest_ts = ts
-                                            pick = current_jobs[key]
-                                source_job, source_event = pick if pick is not None else current_jobs.get(str(candidate.evidence[0].event_id), batch[0])
-                            else:
-                                source_job, source_event = current_jobs.get(str(candidate.evidence[0].event_id), batch[0])
+                            pick = None
+                            latest_ts = ""
+                            for span in candidate.evidence:
+                                key = str(span.event_id)
+                                if key in current_jobs:
+                                    ev_row = current_jobs[key][1]
+                                    ts = str(ev_row["occurred_at"] or "")
+                                    if ts >= latest_ts:
+                                        latest_ts = ts
+                                        pick = current_jobs[key]
+                            if pick is None:
+                                raise CandidateRejected("evidence_not_in_ingestion_batch")
+                            source_job, source_event = pick
                         else:
-                            source_job, source_event = batch[0]
+                            found = current_jobs.get(str(candidate.evidence[0].event_id))
+                            if found is None:
+                                raise CandidateRejected("evidence_not_in_ingestion_batch")
+                            source_job, source_event = found
                         validated_candidates.append((candidate, validated, source_job, source_event))
                     except CandidateRejected as exc:
                         rejected += 1

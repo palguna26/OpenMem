@@ -110,31 +110,58 @@ class TemporalBlock(BaseModel):
         )
 
 
-def temporal_recency_score(valid_from: datetime | None, now: datetime | None = None) -> float:
-    """Small 0..0.02 recency bonus; newer `valid_from` wins when scores tie."""
-    if not valid_from:
-        return 0.0
-    current = now or utc_now()
+def _to_utc(value: datetime | None) -> datetime | None:
+    """Normalize to UTC; naive values are assumed UTC (documented default)."""
+    if value is None:
+        return None
     try:
-        age_days = max(0.0, (current - valid_from).total_seconds() / 86400)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    except Exception:
+        return None
+
+
+def temporal_recency_score(valid_from: datetime | None, now: datetime | None = None) -> float:
+    """Small 0..0.02 recency bonus; newer `valid_from` wins when scores tie.
+
+    Callers must pass an explicit ``now`` (the search-resolved reference
+    time).  When ``now`` is omitted no clock is read and ``0.0`` is returned,
+    keeping explicit-reference scores independent of the machine clock.
+    Both timestamps normalize to UTC; naive values are assumed UTC.
+    """
+    if not valid_from or now is None:
+        return 0.0
+    start = _to_utc(valid_from)
+    current = _to_utc(now)
+    if start is None or current is None:
+        return 0.0
+    try:
+        age_days = max(0.0, (current - start).total_seconds() / 86400)
     except Exception:
         return 0.0
     # Decay over 90 days, clamped to 0..0.02 - matches former placeholder but continuous.
     return max(0.0, min(0.02, 0.02 * (1.0 - min(age_days, 90.0) / 90.0)))
 
 
-TemporalIntent = Literal["latest", "historical", "earliest", "before", "after", "around", "none"]
+TemporalIntent = Literal["latest", "historical", "earliest", "before", "after", "since", "around", "none"]
 
 
 class TemporalQuery(BaseModel):
     """Explicit temporal representation for date-aware retrieval.
+
+    Shared definition used by atom retrieval (``retrieval.py`` re-exports
+    this type) and production search scoring. ``since`` is distinct from
+    ``after``: ``since <period>`` means ``>= period start`` while
+    ``after <period>`` means ``>= period end`` (Task 2A interval boundaries
+    preserved).
 
     ``reference_date`` is the benchmark ``question_date`` (never the machine
     clock) so "current" means valid at question time.  Dates influence ranking,
     not hard-filtering, unless the query clearly requires it.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     reference_date: datetime | None = None
     intent: TemporalIntent = "none"
@@ -149,19 +176,31 @@ def temporal_valid_at_score(
     recorded_at: datetime | None,
     query: TemporalQuery,
 ) -> float:
-    """Score how well a memory's temporal block matches a temporal query."""
+    """Score how well a memory's temporal block matches a temporal query.
+
+    Never reads the machine clock: callers pass the search-resolved reference
+    via ``query.reference_date``.  When ``latest`` has no reference, returns
+    ``0.0`` instead of falling back to ``now()``.
+    """
     if query.intent == "none":
         return 0.0
-    ref = query.reference_date or utc_now()
+    ref = query.reference_date
     if query.intent == "latest":
+        if ref is None:
+            return 0.0
+        ref_utc = _to_utc(ref)
+        if ref_utc is None:
+            return 0.0
         # Prefer facts valid at the question date.
         try:
-            if valid_from and valid_from > ref:
+            start_utc = _to_utc(valid_from)
+            end_utc = _to_utc(valid_until)
+            if start_utc and start_utc > ref_utc:
                 return -0.03
-            if valid_until and valid_until <= ref:
+            if end_utc and end_utc <= ref_utc:
                 return -0.02
-            if valid_from:
-                age_days = max(0.0, (ref - valid_from).total_seconds() / 86400)
+            if start_utc:
+                age_days = max(0.0, (ref_utc - start_utc).total_seconds() / 86400)
                 return max(0.0, 0.05 * (1.0 - min(age_days, 365.0) / 365.0))
             return 0.02
         except Exception:
@@ -173,21 +212,19 @@ def temporal_valid_at_score(
         return 0.01
     if query.intent == "earliest":
         return 0.0
-    if query.intent in {"around", "before", "after"}:
-        anchor = valid_from or recorded_at
+    if query.intent in {"around", "before", "after", "since"}:
+        anchor = _to_utc(valid_from) or _to_utc(recorded_at)
         if anchor is None:
             return -0.01 if query.intent == "around" else 0.0
-        try:
-            anchor_naive = anchor.replace(tzinfo=None) if anchor.tzinfo else anchor
-        except Exception:
-            return 0.0
         if query.intent == "around" and query.date_range_start and query.date_range_end:
             try:
-                start = query.date_range_start.replace(tzinfo=None) if query.date_range_start.tzinfo else query.date_range_start
-                end = query.date_range_end.replace(tzinfo=None) if query.date_range_end.tzinfo else query.date_range_end
-                if start <= anchor_naive < end:
+                start = _to_utc(query.date_range_start)
+                end = _to_utc(query.date_range_end)
+                if start is None or end is None:
+                    return 0.0
+                if start <= anchor < end:
                     return 0.08
-                gap = min(abs((anchor_naive - start).days), abs((anchor_naive - end).days))
+                gap = min(abs((anchor - start).days), abs((anchor - end).days))
                 if gap <= 90:
                     return 0.04 * (1.0 - gap / 90.0)
             except Exception:
@@ -195,14 +232,18 @@ def temporal_valid_at_score(
             return 0.0
         if query.intent == "before" and query.target_date:
             try:
-                target = query.target_date.replace(tzinfo=None) if query.target_date.tzinfo else query.target_date
-                return 0.05 if anchor_naive < target else -0.02
+                target = _to_utc(query.target_date)
+                if target is None:
+                    return 0.0
+                return 0.05 if anchor < target else -0.02
             except Exception:
                 return 0.0
-        if query.intent == "after" and query.target_date:
+        if query.intent in {"after", "since"} and query.target_date:
             try:
-                target = query.target_date.replace(tzinfo=None) if query.target_date.tzinfo else query.target_date
-                return 0.05 if anchor_naive >= target else -0.02
+                target = _to_utc(query.target_date)
+                if target is None:
+                    return 0.0
+                return 0.05 if anchor >= target else -0.02
             except Exception:
                 return 0.0
     return 0.0

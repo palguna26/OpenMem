@@ -1,4 +1,5 @@
 """Category-focused coverage for LongMemEval retrieval improvements (Phases 1-5)."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from src.storage.db import Database
 # Phase 1: token correctness + staged measurement
 # ---------------------------------------------------------------------------
 
+
 def test_packed_words_and_tokens_are_separate():
     text = "Hello world, this is a test."
     words = count_words(text)
@@ -35,10 +37,7 @@ def test_packed_words_and_tokens_are_separate():
 
 
 def test_pack_atoms_enforces_token_budget_after_headers():
-    hits = [
-        AtomHit(f"a{i}", f"s{i % 3}", "filler fact about SQLite preferences " * 10, "2023/05/20 (Sat) 02:21", "user", 1.0 - i * 0.01)
-        for i in range(20)
-    ]
+    hits = [AtomHit(f"a{i}", f"s{i % 3}", "filler fact about SQLite preferences " * 10, "2023/05/20 (Sat) 02:21", "user", 1.0 - i * 0.01) for i in range(20)]
     packed = pack_atoms_token_aware(hits, token_budget=200, tokenizer_model="gpt-4o-mini")
     assert packed["token_count"] <= 200
     assert packed["word_count"] == len(str(packed["text"]).split())
@@ -85,8 +84,11 @@ def test_search_atoms_reports_named_stages(tmp_path):
         db.execute("INSERT OR IGNORE INTO namespaces(id, org_id, created_at) VALUES ('n1','b',datetime('now'))")
         db.connection.commit()
         hits, stages = search_atoms_with_stages(
-            db, "What is my current job?", 10,
-            vector_search=lambda *_: [], namespace_id=None,
+            db,
+            "What is my current job?",
+            10,
+            vector_search=lambda *_: [],
+            namespace_id=None,
             reference_date="2023/05/20 (Sat) 02:21",
         )
         assert set(stages) >= {"fts_ms", "dense_ms", "rrf_ms", "temporal_ms"}
@@ -99,6 +101,7 @@ def test_search_atoms_reports_named_stages(tmp_path):
 # ---------------------------------------------------------------------------
 # Phase 2: temporal / date-aware retrieval
 # ---------------------------------------------------------------------------
+
 
 def test_parse_temporal_query_intents():
     assert parse_temporal_query("What is my current job?", "2023/05/20 (Sat) 02:21").intent == "latest"
@@ -156,16 +159,19 @@ def test_temporal_valid_at_score_latest_vs_historical():
 def test_temporal_valid_at_score_before_after_around():
     ref = datetime(2023, 6, 1, tzinfo=UTC)
     around = TemporalQuery(
-        reference_date=ref, intent="around",
+        reference_date=ref,
+        intent="around",
         target_date=datetime(2023, 3, 15, tzinfo=UTC),
         date_range_start=datetime(2023, 3, 1, tzinfo=UTC),
         date_range_end=datetime(2023, 4, 1, tzinfo=UTC),
     )
-    assert temporal_valid_at_score(datetime(2023, 3, 15, tzinfo=UTC), None, None, around) > \
-        temporal_valid_at_score(datetime(2022, 1, 1, tzinfo=UTC), None, None, around)
+    assert temporal_valid_at_score(datetime(2023, 3, 15, tzinfo=UTC), None, None, around) > temporal_valid_at_score(
+        datetime(2022, 1, 1, tzinfo=UTC), None, None, around
+    )
     before = TemporalQuery(reference_date=ref, intent="before", target_date=datetime(2023, 1, 1, tzinfo=UTC))
-    assert temporal_valid_at_score(datetime(2022, 6, 1, tzinfo=UTC), None, None, before) > \
-        temporal_valid_at_score(datetime(2023, 6, 1, tzinfo=UTC), None, None, before)
+    assert temporal_valid_at_score(datetime(2022, 6, 1, tzinfo=UTC), None, None, before) > temporal_valid_at_score(
+        datetime(2023, 6, 1, tzinfo=UTC), None, None, before
+    )
 
 
 def test_question_dates_near_version_boundaries():
@@ -193,9 +199,13 @@ def test_repository_temporal_scoring_uses_reference_date(tmp_path, monkeypatch):
             return [self.embed(v) for v in values]
 
     db = TermyteDB(tmp_path / "temporal.sqlite", embedding_provider=_Emb())
-    db.ingest(event("ns1", "k1", "User lives in Delhi."))
-    db.ingest(event("ns1", "k2", "User now lives in Pune, moved from Delhi."))
-    current = db.search("ns1", "where does user currently live", limit=5)
+    # Fixed event dates keep validity fixed relative to the fixed reference,
+    # so this test never expires as the calendar advances (no 2030 hack).
+    e1 = {**event("ns1", "k1", "User lives in Delhi."), "occurred_at": "2023-04-01T00:00:00+00:00"}
+    e2 = {**event("ns1", "k2", "User now lives in Pune, moved from Delhi."), "occurred_at": "2023-05-01T00:00:00+00:00"}
+    db.ingest(e1)
+    db.ingest(e2)
+    current = db.search("ns1", "where does user currently live", limit=5, reference_date="2023/05/20 (Sat) 02:21")
     assert len(current) > 0
     assert any("temporal_boost" in r.component_scores for r in current)
     # Reference-date path must not crash and must score deterministically.
@@ -207,6 +217,7 @@ def test_repository_temporal_scoring_uses_reference_date(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Phase 3: preference extraction + retrieval
 # ---------------------------------------------------------------------------
+
 
 def test_preference_polarity_classification():
     assert preference_polarity("User prefers Sony.") == "positive"
@@ -295,6 +306,7 @@ def test_repository_preference_boost_in_scores(tmp_path, monkeypatch):
 # Phase 4: multi-session aggregation
 # ---------------------------------------------------------------------------
 
+
 def test_aggregate_atom_sessions_covers_multiple_sessions():
     hits = [
         AtomHit("a1", "s1", "User likes tea.", "2023/01/01 (Sun) 00:00", "user", 0.9),
@@ -344,6 +356,7 @@ def test_multi_session_evidence_share_cap(tmp_path, monkeypatch):
 # Phase 5: latency (cached reranker, batched SQL, indexes)
 # ---------------------------------------------------------------------------
 
+
 def test_flashrank_init_cached():
     from src.retrieval.retrieval import _cached_flashrank
 
@@ -351,6 +364,7 @@ def test_flashrank_init_cached():
         first = _cached_flashrank("ms-marco-MiniLM-L-12-v2")
     except Exception:
         import pytest
+
         pytest.skip("flashrank model unavailable offline")
         return
     second = _cached_flashrank("ms-marco-MiniLM-L-12-v2")
