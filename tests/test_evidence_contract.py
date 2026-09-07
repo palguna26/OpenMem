@@ -563,6 +563,8 @@ def _v3_factory_valid(request):
     if not labels:
         raise AssertionError("test setup: v3 request has no event labels")
     extractable = list(getattr(request, "extractable_event_ids", []) or [])
+    if not extractable:
+        raise AssertionError("test setup: v3 request has no extractable events")
     rev = {str(v): k for k, v in labels.items()}
     target_label = None
     for eid in extractable:
@@ -570,12 +572,7 @@ def _v3_factory_valid(request):
             target_label = rev[str(eid)]
             break
     if target_label is None:
-        for eid in list(getattr(request, "events", []) or []):
-            if str(eid) in rev:
-                target_label = rev[str(eid)]
-                break
-    if target_label is None:
-        target_label = next(iter(labels))
+        raise AssertionError("test setup: no extractable label in v3 request")
     from tests.test_direct_pipeline import _v3_candidate as _mk
 
     source = next(iter(request.evidence_text.values()))
@@ -645,37 +642,75 @@ def test_v3_context_only_rejected_both_paths(tmp_path: Path, monkeypatch: pytest
 
 
 def test_v3_spanning_selects_extractable_source_both_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Spanning [context, extractable] labels: processor uses the extractable event.
+
+    Storage policy (repository, stable lifecycle): persisted ``source_event_id``
+    keeps the provider's first cited event (here the context prior), while
+    ``observed_at`` tracks the latest source time and ``evidence_refs`` cite
+    every event. Only ``current``-lifecycle rewrites primary provenance to the
+    latest event. The test therefore asserts processor selection (spied
+    ``reconcile_candidate`` event) == extractable current separately from the
+    persisted ``source_event_id`` == first-cited prior.
+    """
     monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
     prior_text = "I prefer SQLite for local storage."
     current_text = "Constraint: deploy the SQLite service in India region."
-    prior = {**_event("n1", "k1", prior_text), "stream_id": "s1"}
-    current = {**_event("n1", "k2", current_text), "stream_id": "s1"}
+    prior_occurred = "2023-04-01T00:00:00+00:00"
+    current_occurred = "2023-05-01T00:00:00+00:00"
+    prior = {**_event("n1", "k1", prior_text), "stream_id": "s1", "occurred_at": prior_occurred}
+    current = {**_event("n1", "k2", current_text), "stream_id": "s1", "occurred_at": current_occurred}
+
+    def _install_spy(db):
+        seen: list[tuple[str, str]] = []
+        orig = db.repository.reconcile_candidate
+
+        def spy(namespace_id, event, candidate, run_id, embedding=None, **kwargs):
+            try:
+                seen.append((str(candidate.candidate.statement), str(event["id"])))
+            except Exception:
+                pass
+            return orig(namespace_id, event, candidate, run_id, embedding, **kwargs)
+
+        monkeypatch.setattr(db.repository, "reconcile_candidate", spy)
+        return seen
+
+    def _check_spanning(db, current_eid, prior_eid, seen):
+        # Processor selection: spanning statement reconciled with extractable current.
+        matches = [eid for stmt, eid in seen if stmt == "User prefers SQLite for local storage."]
+        assert matches, "test setup: spanning candidate never reached reconcile"
+        assert matches[-1] == current_eid
+        ver = db.database.execute(
+            "SELECT id, source_event_id, observed_at, source_event_ids_json FROM memory_versions"
+            " WHERE namespace_id='n1' AND statement='User prefers SQLite for local storage.'"
+        ).fetchone()
+        assert ver is not None
+        # Both citations with exact offsets/excerpts.
+        refs = {
+            r["event_id"]: r
+            for r in db.database.execute(
+                "SELECT event_id, start_offset, end_offset, excerpt FROM evidence_refs WHERE namespace_id=? AND memory_version_id=?",
+                ("n1", ver["id"]),
+            ).fetchall()
+        }
+        assert set(refs) == {prior_eid, current_eid}
+        assert (refs[prior_eid]["start_offset"], refs[prior_eid]["end_offset"]) == (0, len(prior_text))
+        assert refs[prior_eid]["excerpt"] == prior_text
+        assert (refs[current_eid]["start_offset"], refs[current_eid]["end_offset"]) == (0, len(current_text))
+        assert refs[current_eid]["excerpt"] == current_text
+        # Persisted primary provenance keeps first-cited (context prior) for stable;
+        # observed_at tracks the latest source time.
+        assert str(ver["source_event_id"]) == prior_eid
+        assert str(ver["observed_at"]) == current_occurred
 
     db = TermyteDB(tmp_path / "v3-span-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
     try:
         seed = db.ingest(prior)
         assert seed.accepted == 1 and seed.rejected == 0
         db.processor.provider = V3Provider(_v3_factory_spanning)
+        seen = _install_spy(db)
         result = db.ingest(current)
         assert result.accepted == 1 and result.rejected == 0
-        current_eid = _event_id(db, "n1", "k2")
-        prior_eid = _event_id(db, "n1", "k1")
-        ver = db.database.execute(
-            "SELECT id, source_event_id, observed_at, source_event_ids_json FROM memory_versions"
-            " WHERE namespace_id='n1' AND statement='User prefers SQLite for local storage.'"
-        ).fetchone()
-        assert ver is not None
-        # Spanning evidence keeps both events with exact excerpts.
-        refs = db.database.execute(
-            "SELECT event_id, excerpt FROM evidence_refs WHERE namespace_id=? AND memory_version_id=?",
-            ("n1", ver["id"]),
-        ).fetchall()
-        assert {r["event_id"] for r in refs} == {prior_eid, current_eid}
-        # Provenance source is one of the cited evidence events (never arbitrary).
-        assert str(ver["source_event_id"]) in {prior_eid, current_eid}
-        # observed_at follows the latest source event time.
-        cur_occurred = db.database.execute("SELECT occurred_at FROM events WHERE id=?", (current_eid,)).fetchone()[0]
-        assert str(ver["observed_at"]) == str(cur_occurred)
+        _check_spanning(db, _event_id(db, "n1", "k2"), _event_id(db, "n1", "k1"), seen)
     finally:
         db.close()
     db2 = TermyteDB(tmp_path / "v3-span-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
@@ -687,20 +722,10 @@ def test_v3_spanning_selects_extractable_source_both_paths(tmp_path: Path, monke
             db2.ingest(current)
         monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
         db2.processor.provider = V3Provider(_v3_factory_spanning)
+        seen2 = _install_spy(db2)
         resp = db2.process("n1")
         assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
         assert resp.accepted == 1 and resp.rejected == 0
-        current_eid = _event_id(db2, "n1", "k2")
-        prior_eid = _event_id(db2, "n1", "k1")
-        ver = db2.database.execute(
-            "SELECT id, source_event_id FROM memory_versions WHERE namespace_id='n1' AND statement='User prefers SQLite for local storage.'"
-        ).fetchone()
-        assert ver is not None
-        refs = db2.database.execute(
-            "SELECT event_id FROM evidence_refs WHERE namespace_id=? AND memory_version_id=?",
-            ("n1", ver["id"]),
-        ).fetchall()
-        assert {r["event_id"] for r in refs} == {prior_eid, current_eid}
-        assert str(ver["source_event_id"]) in {prior_eid, current_eid}
+        _check_spanning(db2, _event_id(db2, "n1", "k2"), _event_id(db2, "n1", "k1"), seen2)
     finally:
         db2.close()
