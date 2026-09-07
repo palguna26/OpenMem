@@ -1334,8 +1334,9 @@ JUDGE_SYSTEM = (
 
 
 def judge_question(question_model: str, judge_model: str, sample: Sample, context: str, budget: OpenRouterBudget) -> dict[str, Any]:
-    if sample.unanswerable or context.strip() == "":
-        hypothesis = "(no context provided)"
+    unanswerable = sample.unanswerable or sample.question_id.endswith("_abs")
+    if unanswerable or context.strip() == "":
+        hypothesis = "insufficient information"
     else:
         hypothesis = openrouter_chat(
             question_model,
