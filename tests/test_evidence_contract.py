@@ -7,7 +7,7 @@ with explicit diagnostics; transport failures stay retryable.
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -42,9 +42,11 @@ def _result(candidates, name="t", model="t-v1"):
 
 
 def _valid_candidate(request, statement=None):
+    assert request.events, "test setup: request has no extractable events"
     eid = request.events[0]
+    assert eid in request.evidence_text, "test setup: extractable event missing from evidence_text"
     text = request.evidence_text[eid]
-    excerpt = text[:20]
+    excerpt = text[:60]
     return ExtractionCandidate(
         kind="fact",
         subject="user preference",
@@ -83,14 +85,25 @@ class BadExcerptProvider:
     model = "bad-excerpt-v1"
 
     def extract(self, request, timeout_seconds=30.0, cancellation=None):
+        assert request.events, "test setup: no extractable events"
         eid = request.events[0]
         text = request.evidence_text[eid]
-        cand = _valid_candidate(request)
-        bad = cand.model_copy(
-            update={"evidence": [EvidenceSpan(event_id=eid, start_offset=0, end_offset=5, excerpt="WRONG")]},
+        assert text[:5] != "WRONG", "test setup: fixture collides with corruption marker"
+        return _result(
+            [
+                ExtractionCandidate(
+                    kind="fact",
+                    subject="user preference",
+                    statement=text[:120],
+                    evidence=[EvidenceSpan(event_id=eid, start_offset=0, end_offset=5, excerpt="WRONG")],
+                    confidence=0.9,
+                    importance=0.5,
+                    durability="permanent",
+                )
+            ],
+            self.name,
+            self.model,
         )
-        assert text[:5] != "WRONG"
-        return _result([bad], self.name, self.model)
 
 
 class BadOffsetProvider:
@@ -98,6 +111,7 @@ class BadOffsetProvider:
     model = "bad-offset-v1"
 
     def extract(self, request, timeout_seconds=30.0, cancellation=None):
+        assert request.events, "test setup: no extractable events"
         eid = request.events[0]
         return _result(
             [
@@ -122,6 +136,7 @@ class UnknownSourceProvider:
 
     def extract(self, request, timeout_seconds=30.0, cancellation=None):
         ghost = uuid4()
+        assert ghost not in request.evidence_text, "test setup: ghost id collides"
         return _result(
             [
                 ExtractionCandidate(
@@ -140,20 +155,24 @@ class UnknownSourceProvider:
 
 
 class CrossNamespaceProvider:
+    """Cite a real n2 event (with its correct excerpt) from an n1 extraction."""
+
     name = "cross-ns"
     model = "cross-ns-v1"
 
-    def __init__(self, foreign_event_id):
+    def __init__(self, foreign_event_id: UUID, foreign_text: str):
         self.foreign_event_id = foreign_event_id
+        self.foreign_text = foreign_text
 
     def extract(self, request, timeout_seconds=30.0, cancellation=None):
+        excerpt = self.foreign_text[:5]
         return _result(
             [
                 ExtractionCandidate(
                     kind="fact",
                     subject="user preference",
-                    statement="User prefers SQLite for local storage.",
-                    evidence=[EvidenceSpan(event_id=self.foreign_event_id, start_offset=0, end_offset=5, excerpt="hello")],
+                    statement=self.foreign_text[:120],
+                    evidence=[EvidenceSpan(event_id=self.foreign_event_id, start_offset=0, end_offset=len(excerpt), excerpt=excerpt)],
                     confidence=0.9,
                     importance=0.5,
                     durability="permanent",
@@ -182,17 +201,15 @@ class ContextOnlyProvider:
 
     def extract(self, request, timeout_seconds=30.0, cancellation=None):
         extractable = set(request.events) | set(getattr(request, "extractable_event_ids", []) or [])
-        # Prefer an explicit context id when the request splits them.
         context_ids = list(getattr(request, "context_event_ids", []) or [])
         targets = [eid for eid in context_ids if eid in request.evidence_text]
         if not targets:
             targets = [eid for eid in request.evidence_text if eid not in extractable]
         if not targets:
-            # No context available (test setup error) — fall back to valid.
-            return _result([_valid_candidate(request)], self.name, self.model)
+            raise AssertionError("test setup: no context event in request")
         eid = targets[0]
         text = request.evidence_text[eid]
-        excerpt = text[:20]
+        excerpt = text[:60]
         return _result(
             [
                 ExtractionCandidate(
@@ -226,32 +243,71 @@ class FailingProvider:
         raise ProviderError("provider unavailable", retryable=True, error_class="transport_error")
 
 
-def _event(ns, key, text):
-    return {"namespace_id": ns, "idempotency_key": key, "type": "conversation", "payload": {"text": text}}
+def _v3_candidate(statement, *, labels):
+    assert labels, "test setup: v3 candidate needs source labels"
+    return ExtractionCandidate(
+        kind="fact",
+        subject="user profile",
+        statement=statement,
+        evidence=[],
+        confidence=0.9,
+        importance=0.8,
+        durability="permanent",
+        v3_type="fact",
+        v3_lifecycle="stable",
+        v3_source_labels=list(labels),
+        v3_importance_int=4,
+    )
+
+
+class V3Provider:
+    name = "v3-test"
+    model = "v3-test-model"
+
+    def __init__(self, factory):
+        self.factory = factory
+
+    def extract(self, request, timeout_seconds=30.0, cancellation=None):
+        return ProviderResult(
+            response=ExtractionResponse(
+                schema_version="extraction-v1",
+                prompt_version="extraction-v3-test",
+                candidates=[self.factory(request)],
+            ),
+            provider_name=self.name,
+            model_name=self.model,
+            prompt_version="extraction-v3-test",
+            raw_response_hash="test",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            stage="facts",
+        )
+
+
+def _event(ns, key, text, stream_id=None):
+    ev = {"namespace_id": ns, "idempotency_key": key, "type": "conversation", "payload": {"text": text}}
+    if stream_id is not None:
+        ev["stream_id"] = stream_id
+    return ev
 
 
 def run_direct(tmp_path: Path, provider, events, name="t.sqlite"):
     db = TermyteDB(tmp_path / name, extraction_provider=provider, embedding_provider=RecordingEmbedding())
-    try:
-        result = db.ingest_batch(events)
-        return db, result
-    except Exception:
-        return db, None
+    result = db.ingest_batch(events)
+    return db, result
 
 
 def run_queued(tmp_path: Path, provider, events, name="t.sqlite"):
     """Exercise process_namespace via a failing direct ingest then provider swap."""
     db = TermyteDB(tmp_path / name, extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
-    try:
-        for ev in events:
-            with pytest.raises(ProviderError):
-                db.ingest(ev)
-        assert db.memories(events[0]["namespace_id"]) == []
-        db.processor.provider = provider
-        resp = db.process(events[0]["namespace_id"])
-        return db, resp
-    except Exception:
-        return db, None
+    for ev in events:
+        with pytest.raises(ProviderError):
+            db.ingest(ev)
+    assert db.memories(events[0]["namespace_id"]) == []
+    db.processor.provider = provider
+    resp = db.process(events[0]["namespace_id"])
+    return db, resp
 
 
 def _rejection_reasons(db, namespace):
@@ -262,17 +318,36 @@ def _rejection_reasons(db, namespace):
     return {r[0] for r in rows}
 
 
+def _citations(db, namespace):
+    rows = db.database.execute(
+        """SELECT r.event_id AS event_id, r.start_offset AS start_offset, r.end_offset AS end_offset,
+                  r.excerpt AS excerpt, e.namespace_id AS ns
+           FROM evidence_refs r JOIN events e ON e.id=r.event_id
+           WHERE r.namespace_id=? ORDER BY r.rowid""",
+        (namespace,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _event_id(db, namespace, key):
+    # Stable UUID derivation matches repository.stable_uuid.
+    from src.storage.repository import stable_uuid
+
+    return stable_uuid(namespace, key)
+
+
 def test_missing_evidence_rejected_by_both(tmp_path: Path):
     db, result = run_direct(tmp_path, MissingProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "d1.sqlite")
     try:
-        assert result is not None and result.accepted == 0 and result.rejected == 1
+        assert result.accepted == 0 and result.rejected == 1
         assert db.memories("n1") == []
         assert "missing_source_evidence" in _rejection_reasons(db, "n1")
     finally:
         db.close()
     db2, resp = run_queued(tmp_path, MissingProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "q1.sqlite")
     try:
-        assert resp is not None
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
         assert db2.memories("n1") == []
         assert "missing_source_evidence" in _rejection_reasons(db2, "n1")
     finally:
@@ -283,7 +358,7 @@ def test_incorrect_excerpt_or_offsets_rejected_by_both(tmp_path: Path):
     for provider, name in ((BadExcerptProvider(), "excerpt"), (BadOffsetProvider(), "offset")):
         db, result = run_direct(tmp_path, provider, [_event("n1", f"k-{name}", "I prefer SQLite for local storage.")], f"d-{name}.sqlite")
         try:
-            assert result is not None and result.accepted == 0, name
+            assert result.accepted == 0 and result.rejected == 1, name
             assert db.memories("n1") == [], name
             reasons = _rejection_reasons(db, "n1")
             assert reasons & {"evidence_excerpt_mismatch", "invalid_evidence_span"}, (name, reasons)
@@ -291,6 +366,8 @@ def test_incorrect_excerpt_or_offsets_rejected_by_both(tmp_path: Path):
             db.close()
         db2, resp = run_queued(tmp_path, provider.__class__(), [_event("n1", f"k-{name}", "I prefer SQLite for local storage.")], f"q-{name}.sqlite")
         try:
+            assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0, name
+            assert resp.accepted == 0 and resp.rejected == 1, name
             assert db2.memories("n1") == [], name
             reasons = _rejection_reasons(db2, "n1")
             assert reasons & {"evidence_excerpt_mismatch", "invalid_evidence_span"}, (name, reasons)
@@ -298,52 +375,64 @@ def test_incorrect_excerpt_or_offsets_rejected_by_both(tmp_path: Path):
             db2.close()
 
 
-def test_unknown_and_cross_namespace_source_rejected_by_both(tmp_path: Path):
-    # Unknown random event.
+def test_unknown_source_rejected_by_both(tmp_path: Path):
     db, result = run_direct(tmp_path, UnknownSourceProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "d-unk.sqlite")
     try:
-        assert result is not None and result.accepted == 0
+        assert result.accepted == 0 and result.rejected == 1
         assert db.memories("n1") == []
         assert "evidence_not_in_extraction_input" in _rejection_reasons(db, "n1")
     finally:
         db.close()
-    db2, _ = run_queued(tmp_path, UnknownSourceProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "q-unk.sqlite")
+    db2, resp = run_queued(tmp_path, UnknownSourceProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "q-unk.sqlite")
     try:
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
         assert db2.memories("n1") == []
         reasons = _rejection_reasons(db2, "n1")
         assert reasons & {"evidence_not_in_extraction_input", "evidence_not_in_ingestion_batch"}, reasons
     finally:
         db2.close()
-    # Cross-namespace: seed n2 event, then cite it from n1.
-    seed = TermyteDB(tmp_path / "seed.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
-    try:
-        seed.ingest(_event("n2", "k1", "Decision: use SQLite in another namespace project work."))
-        foreign_id = seed.database.execute("SELECT id FROM events WHERE namespace_id='n2'").fetchone()[0]
-        from uuid import UUID as _UUID
 
-        foreign_uuid = _UUID(str(foreign_id))
-    finally:
-        seed.close()
-    db3 = TermyteDB(tmp_path / "d-cross.sqlite", extraction_provider=CrossNamespaceProvider(foreign_uuid), embedding_provider=RecordingEmbedding())
+
+def test_cross_namespace_real_event_rejected_by_both(tmp_path: Path):
+    """Same database: n2 event exists; n1 extraction cites it with correct excerpt."""
+    n2_text = "Decision: use SQLite in another namespace project work."
+    n1_text = "I prefer SQLite for local storage."
+    foreign_excerpt = n2_text[:5]
+
+    # Direct: seed n2 (valid), then swap to cross-namespace provider for n1.
+    db = TermyteDB(tmp_path / "d-cross.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
-        result = db3.ingest(_event("n1", "k1", "I prefer SQLite for local storage."))
-        assert result.accepted == 0
-        assert db3.memories("n1") == []
-        assert "evidence_not_in_extraction_input" in _rejection_reasons(db3, "n1")
+        db.ingest(_event("n2", "k1", n2_text))
+        foreign_id = UUID(_event_id(db, "n2", "k1"))
+        db.processor.provider = CrossNamespaceProvider(foreign_id, n2_text)
+        result = db.ingest(_event("n1", "k1", n1_text))
+        assert result.accepted == 0 and result.rejected == 1
+        assert db.memories("n1") == []
+        assert "evidence_not_in_extraction_input" in _rejection_reasons(db, "n1")
+        # n2 memory untouched.
+        assert len(db.memories("n2")) == 1
     finally:
-        db3.close()
-    db4 = TermyteDB(tmp_path / "q-cross.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
+        db.close()
+    # Queued: same database, n1 via failing ingest then retry with cross-namespace cite.
+    db2 = TermyteDB(tmp_path / "q-cross.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
+        db2.ingest(_event("n2", "k1", n2_text))
+        foreign_id2 = UUID(_event_id(db2, "n2", "k1"))
+        db2.processor.provider = FailingProvider()
         with pytest.raises(ProviderError):
-            db4.ingest(_event("n1", "k1", "I prefer SQLite for local storage."))
-        # Reuse the same foreign id (an n2 event id is unknown to n1's input).
-        db4.processor.provider = CrossNamespaceProvider(foreign_uuid)
-        db4.process("n1")
-        assert db4.memories("n1") == []
-        reasons = _rejection_reasons(db4, "n1")
-        assert reasons & {"evidence_not_in_extraction_input", "evidence_not_in_ingestion_batch"}, reasons
+            db2.ingest(_event("n1", "k1", n1_text))
+        assert db2.memories("n1") == []
+        db2.processor.provider = CrossNamespaceProvider(foreign_id2, n2_text)
+        resp = db2.process("n1")
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
+        assert db2.memories("n1") == []
+        reasons = _rejection_reasons(db2, "n1")
+        assert "evidence_not_in_extraction_input" in reasons, reasons
+        assert foreign_excerpt == n2_text[:5]
     finally:
-        db4.close()
+        db2.close()
 
 
 def test_context_only_source_rejected_by_both(tmp_path: Path):
@@ -351,27 +440,16 @@ def test_context_only_source_rejected_by_both(tmp_path: Path):
     prior = {**_event("n1", "k1", "I prefer SQLite for local storage."), "stream_id": "s1"}
     current = {**_event("n1", "k2", "Constraint: deploy the SQLite service in India region."), "stream_id": "s1"}
 
-    def _seed(db_path: str):
-        db = TermyteDB(tmp_path / db_path, extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
-        try:
-            db.ingest(prior)
-            return db
-        except Exception:
-            db.close()
-            raise
-
-    # Direct: prior exists, current cites only prior (context).
-    db0 = _seed("ctx-seed-d.sqlite")
+    db = TermyteDB(tmp_path / "ctx-seed-d.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
-        db0.processor.provider = ContextOnlyProvider()
-        result = db0.ingest(current)
-        assert result.accepted == 0, result
-        # Only the prior memory exists; no memory from context-only citation.
-        assert len(db0.memories("n1")) == 1
-        assert "evidence_not_in_ingestion_batch" in _rejection_reasons(db0, "n1")
+        db.ingest(prior)
+        db.processor.provider = ContextOnlyProvider()
+        result = db.ingest(current)
+        assert result.accepted == 0 and result.rejected == 1
+        assert len(db.memories("n1")) == 1
+        assert "evidence_not_in_ingestion_batch" in _rejection_reasons(db, "n1")
     finally:
-        db0.close()
-    # Queued: same via failing ingest then retry.
+        db.close()
     db1 = TermyteDB(tmp_path / "ctx-q.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
         db1.ingest(prior)
@@ -380,7 +458,9 @@ def test_context_only_source_rejected_by_both(tmp_path: Path):
             db1.ingest(current)
         assert len(db1.memories("n1")) == 1
         db1.processor.provider = ContextOnlyProvider()
-        db1.process("n1")
+        resp = db1.process("n1")
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
         assert len(db1.memories("n1")) == 1
         assert "evidence_not_in_ingestion_batch" in _rejection_reasons(db1, "n1")
     finally:
@@ -390,13 +470,15 @@ def test_context_only_source_rejected_by_both(tmp_path: Path):
 def test_unknown_chunk_id_rejected_by_both(tmp_path: Path):
     db, result = run_direct(tmp_path, UnknownChunkProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "d-chunk.sqlite")
     try:
-        assert result is not None and result.accepted == 0
+        assert result.accepted == 0 and result.rejected == 1
         assert db.memories("n1") == []
         assert "unknown_source_chunk_id" in _rejection_reasons(db, "n1")
     finally:
         db.close()
-    db2, _ = run_queued(tmp_path, UnknownChunkProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "q-chunk.sqlite")
+    db2, resp = run_queued(tmp_path, UnknownChunkProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "q-chunk.sqlite")
     try:
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
         assert db2.memories("n1") == []
         assert "unknown_source_chunk_id" in _rejection_reasons(db2, "n1")
     finally:
@@ -404,43 +486,59 @@ def test_unknown_chunk_id_rejected_by_both(tmp_path: Path):
 
 
 def test_valid_evidence_accepted_with_citations_by_both(tmp_path: Path):
-    db, result = run_direct(tmp_path, ValidProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "d-valid.sqlite")
+    text = "I prefer SQLite for local storage."
+    expected_excerpt = text[:60]
+    db, result = run_direct(tmp_path, ValidProvider(), [_event("n1", "k1", text)], "d-valid.sqlite")
     try:
-        assert result is not None and result.accepted == 1
-        mems = db.memories("n1")
-        assert len(mems) == 1
-        refs = db.database.execute("SELECT COUNT(*) FROM evidence_refs WHERE namespace_id='n1'").fetchone()[0]
-        assert refs >= 1
+        assert result.accepted == 1 and result.rejected == 0
+        assert len(db.memories("n1")) == 1
+        cites = _citations(db, "n1")
+        assert len(cites) == 1
+        assert cites[0]["event_id"] == _event_id(db, "n1", "k1")
+        assert cites[0]["ns"] == "n1"
+        assert (cites[0]["start_offset"], cites[0]["end_offset"]) == (0, len(expected_excerpt))
+        assert cites[0]["excerpt"] == expected_excerpt
     finally:
         db.close()
-    db2, resp = run_queued(tmp_path, ValidProvider(), [_event("n1", "k1", "I prefer SQLite for local storage.")], "q-valid.sqlite")
+    db2, resp = run_queued(tmp_path, ValidProvider(), [_event("n1", "k1", text)], "q-valid.sqlite")
     try:
-        mems = db2.memories("n1")
-        assert len(mems) == 1
-        refs = db2.database.execute("SELECT COUNT(*) FROM evidence_refs WHERE namespace_id='n1'").fetchone()[0]
-        assert refs >= 1
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 1 and resp.rejected == 0
+        assert len(db2.memories("n1")) == 1
+        cites = _citations(db2, "n1")
+        assert len(cites) == 1
+        assert cites[0]["event_id"] == _event_id(db2, "n1", "k1")
+        assert cites[0]["ns"] == "n1"
+        assert (cites[0]["start_offset"], cites[0]["end_offset"]) == (0, len(expected_excerpt))
+        assert cites[0]["excerpt"] == expected_excerpt
     finally:
         db2.close()
 
 
 def test_provider_failure_then_queued_retry_succeeds_without_duplication(tmp_path: Path):
+    text = "I prefer SQLite for local storage."
+    expected_excerpt = text[:60]
     db = TermyteDB(tmp_path / "retry.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
     try:
         with pytest.raises(ProviderError) as exc:
-            db.ingest(_event("n1", "k1", "I prefer SQLite for local storage."))
+            db.ingest(_event("n1", "k1", text))
         assert exc.value.retryable is True
         assert db.memories("n1") == []
         db.processor.provider = ValidProvider()
         resp = db.process("n1")
-        assert resp.accepted == 1
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 1 and resp.rejected == 0
         assert len(db.memories("n1")) == 1
         assert db.database.execute("SELECT COUNT(*) FROM memory_versions WHERE namespace_id='n1'").fetchone()[0] == 1
-        assert db.database.execute("SELECT COUNT(*) FROM evidence_refs WHERE namespace_id='n1'").fetchone()[0] >= 1
-        # Second retry processes nothing and duplicates nothing.
+        before = _citations(db, "n1")
+        assert len(before) == 1
+        assert before[0]["event_id"] == _event_id(db, "n1", "k1")
+        assert before[0]["excerpt"] == expected_excerpt
         resp2 = db.process("n1")
+        assert resp2.processed == 0
         assert len(db.memories("n1")) == 1
         assert db.database.execute("SELECT COUNT(*) FROM memory_versions WHERE namespace_id='n1'").fetchone()[0] == 1
-        assert resp2.processed == 0
+        assert _citations(db, "n1") == before
     finally:
         db.close()
 
@@ -451,8 +549,158 @@ def test_retry_with_missing_evidence_rejected_without_memory(tmp_path: Path):
         with pytest.raises(ProviderError):
             db.ingest(_event("n1", "k1", "I prefer SQLite for local storage."))
         db.processor.provider = MissingProvider()
-        db.process("n1")
+        resp = db.process("n1")
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
         assert db.memories("n1") == []
         assert "missing_source_evidence" in _rejection_reasons(db, "n1")
     finally:
         db.close()
+
+
+def _v3_factory_valid(request):
+    labels = dict(getattr(request, "event_labels", {}) or {})
+    if not labels:
+        raise AssertionError("test setup: v3 request has no event labels")
+    extractable = list(getattr(request, "extractable_event_ids", []) or [])
+    rev = {str(v): k for k, v in labels.items()}
+    target_label = None
+    for eid in extractable:
+        if str(eid) in rev:
+            target_label = rev[str(eid)]
+            break
+    if target_label is None:
+        for eid in list(getattr(request, "events", []) or []):
+            if str(eid) in rev:
+                target_label = rev[str(eid)]
+                break
+    if target_label is None:
+        target_label = next(iter(labels))
+    from tests.test_direct_pipeline import _v3_candidate as _mk
+
+    source = next(iter(request.evidence_text.values()))
+    return _mk(source[:120] if source else "User prefers SQLite.", labels=[target_label])
+
+
+def _v3_factory_context_only(request):
+    labels = dict(getattr(request, "event_labels", {}) or {})
+    if not labels:
+        raise AssertionError("test setup: v3 request has no event labels")
+    extractable = set(getattr(request, "extractable_event_ids", []) or [])
+    context_labels = [lab for lab, eid in labels.items() if eid not in extractable]
+    if not context_labels:
+        raise AssertionError("test setup: v3 request has no context labels")
+    from tests.test_direct_pipeline import _v3_candidate as _mk
+
+    return _mk("User prefers SQLite for local storage.", labels=[context_labels[0]])
+
+
+def _v3_factory_spanning(request):
+    labels = dict(getattr(request, "event_labels", {}) or {})
+    extractable = list(getattr(request, "extractable_event_ids", []) or [])
+    context_ids = list(getattr(request, "context_event_ids", []) or [])
+    if not extractable or not context_ids:
+        raise AssertionError("test setup: v3 spanning needs one context and one extractable event")
+    rev = {str(v): k for k, v in labels.items()}
+    ctx_label = rev.get(str(context_ids[0]))
+    ext_label = rev.get(str(extractable[0]))
+    if ctx_label is None or ext_label is None:
+        raise AssertionError("test setup: v3 labels do not cover context+extractable")
+    from tests.test_direct_pipeline import _v3_candidate as _mk
+
+    return _mk("User prefers SQLite for local storage.", labels=[ctx_label, ext_label])
+
+
+def test_v3_context_only_rejected_both_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    prior = {**_event("n1", "k1", "I prefer SQLite for local storage."), "stream_id": "s1"}
+    current = {**_event("n1", "k2", "Constraint: deploy the SQLite service in India region."), "stream_id": "s1"}
+    db = TermyteDB(tmp_path / "v3-ctx-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    try:
+        seed = db.ingest(prior)
+        assert seed.accepted == 1 and seed.rejected == 0
+        db.processor.provider = V3Provider(_v3_factory_context_only)
+        result = db.ingest(current)
+        assert result.accepted == 0 and result.rejected == 1
+        assert len(db.memories("n1")) == 1
+        assert "context_only_source" in _rejection_reasons(db, "n1")
+    finally:
+        db.close()
+    db2 = TermyteDB(tmp_path / "v3-ctx-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    try:
+        seed = db2.ingest(prior)
+        assert seed.accepted == 1
+        db2.processor.provider = FailingProvider()
+        with pytest.raises(ProviderError):
+            db2.ingest(current)
+        monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+        db2.processor.provider = V3Provider(_v3_factory_context_only)
+        resp = db2.process("n1")
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 0 and resp.rejected == 1
+        assert len(db2.memories("n1")) == 1
+        assert "context_only_source" in _rejection_reasons(db2, "n1")
+    finally:
+        db2.close()
+
+
+def test_v3_spanning_selects_extractable_source_both_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    prior_text = "I prefer SQLite for local storage."
+    current_text = "Constraint: deploy the SQLite service in India region."
+    prior = {**_event("n1", "k1", prior_text), "stream_id": "s1"}
+    current = {**_event("n1", "k2", current_text), "stream_id": "s1"}
+
+    db = TermyteDB(tmp_path / "v3-span-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    try:
+        seed = db.ingest(prior)
+        assert seed.accepted == 1 and seed.rejected == 0
+        db.processor.provider = V3Provider(_v3_factory_spanning)
+        result = db.ingest(current)
+        assert result.accepted == 1 and result.rejected == 0
+        current_eid = _event_id(db, "n1", "k2")
+        prior_eid = _event_id(db, "n1", "k1")
+        ver = db.database.execute(
+            "SELECT id, source_event_id, observed_at, source_event_ids_json FROM memory_versions"
+            " WHERE namespace_id='n1' AND statement='User prefers SQLite for local storage.'"
+        ).fetchone()
+        assert ver is not None
+        # Spanning evidence keeps both events with exact excerpts.
+        refs = db.database.execute(
+            "SELECT event_id, excerpt FROM evidence_refs WHERE namespace_id=? AND memory_version_id=?",
+            ("n1", ver["id"]),
+        ).fetchall()
+        assert {r["event_id"] for r in refs} == {prior_eid, current_eid}
+        # Provenance source is one of the cited evidence events (never arbitrary).
+        assert str(ver["source_event_id"]) in {prior_eid, current_eid}
+        # observed_at follows the latest source event time.
+        cur_occurred = db.database.execute("SELECT occurred_at FROM events WHERE id=?", (current_eid,)).fetchone()[0]
+        assert str(ver["observed_at"]) == str(cur_occurred)
+    finally:
+        db.close()
+    db2 = TermyteDB(tmp_path / "v3-span-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    try:
+        seed = db2.ingest(prior)
+        assert seed.accepted == 1
+        db2.processor.provider = FailingProvider()
+        with pytest.raises(ProviderError):
+            db2.ingest(current)
+        monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+        db2.processor.provider = V3Provider(_v3_factory_spanning)
+        resp = db2.process("n1")
+        assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
+        assert resp.accepted == 1 and resp.rejected == 0
+        current_eid = _event_id(db2, "n1", "k2")
+        prior_eid = _event_id(db2, "n1", "k1")
+        ver = db2.database.execute(
+            "SELECT id, source_event_id FROM memory_versions WHERE namespace_id='n1' AND statement='User prefers SQLite for local storage.'"
+        ).fetchone()
+        assert ver is not None
+        refs = db2.database.execute(
+            "SELECT event_id FROM evidence_refs WHERE namespace_id=? AND memory_version_id=?",
+            ("n1", ver["id"]),
+        ).fetchall()
+        assert {r["event_id"] for r in refs} == {prior_eid, current_eid}
+        assert str(ver["source_event_id"]) in {prior_eid, current_eid}
+    finally:
+        db2.close()

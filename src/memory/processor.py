@@ -1057,7 +1057,7 @@ class Processor:
                 if extraction_schema_batch == "v3" and v3_rejected_batch:
                     for cand, reason in v3_rejected_batch:
                         _v3_batch_rejected_map[id(cand)] = reason
-                        if cand not in _rejected_batch_grounding:
+                        if cand not in rejected_batch_grounding:
                             rejected_batch_grounding.append(cand)
                 _rejected_batch_grounding = rejected_batch_grounding
                 _v3_batch_map = _v3_batch_rejected_map
