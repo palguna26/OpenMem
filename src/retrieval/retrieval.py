@@ -748,9 +748,11 @@ def pack_atoms_token_aware(
     for hit in hits:
         groups.setdefault(hit.session_id, []).append(hit)
     lines: list[str] = []
-    for session_id in sorted(groups, key=lambda sid: min((h.timestamp or "9999") for h in groups[sid])):
+    # Preserve retrieval relevance.  Chronological packing can evict the best
+    # answer from a small context budget before lower-ranked history.
+    for session_id in groups:
         lines.append(f"[Session {session_id}]")
-        for hit in sorted(groups[session_id], key=lambda item: (item.timestamp or "9999", item.atom_id)):
+        for hit in sorted(groups[session_id], key=lambda item: (-item.score, item.atom_id)):
             lines.append(f"[Timestamp: {hit.timestamp or 'unknown'}] [Role: {hit.source_role}] {hit.fact}")
     if not lines:
         text = "insufficient information"
