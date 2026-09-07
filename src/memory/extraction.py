@@ -91,6 +91,8 @@ def validate_candidate(
             evidence_excerpts.append(actual)
     # Evidence is now optional; skip semantic support check when no evidence is supplied
     if evidence_excerpts:
+        if _explicit_negation(statement) != _explicit_negation(" ".join(evidence_excerpts)):
+            raise CandidateRejected("contradictory_evidence_polarity")
         if strict:
             if not semantic_support(statement, " ".join(evidence_excerpts), subject):
                 raise CandidateRejected("unsupported_statement")
@@ -119,6 +121,18 @@ def semantic_support(statement: str, excerpt: str, subject: str = "", *, thresho
     subject_terms = _significant_terms(subject)
     predicate_terms = statement_terms - subject_terms
     return bool(subject_terms and predicate_terms and subject_terms <= excerpt_terms and predicate_terms & excerpt_terms)
+
+
+_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|neither|nor|cannot|can't|couldn't|didn't|doesn't|don't|isn't|wasn't|won't|wouldn't|without|avoid|avoids|avoided|hate|hates|hated)\b"
+    r"|\bno\s+longer\b",
+    re.IGNORECASE,
+)
+
+
+def _explicit_negation(value: str) -> bool:
+    """Return whether text contains an explicit negative predicate marker."""
+    return bool(_NEGATION_RE.search(value))
 
 
 _STOP_WORDS = {
