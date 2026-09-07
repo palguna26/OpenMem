@@ -111,14 +111,15 @@ class TermyteDB:
                 duplicate=duplicate,
             )
 
-        # Index source-grounded chunks before extraction.
-        self.repository.rebuild_chunks(namespace_id, event_ids=new_event_ids)
-
-        # Durability: enqueue jobs before extraction so failures remain retryable
+        # Durability: enqueue jobs before indexing or extraction so any failure
+        # after event persistence remains retryable.
         job_ids: dict[str, str] = {}
         for event_id in new_event_ids:
             job_id = self.repository.create_processing_job(namespace_id, event_id, event_hashes[event_id])
             job_ids[event_id] = job_id
+
+        # Index source-grounded chunks before extraction.
+        self.repository.rebuild_chunks(namespace_id, event_ids=new_event_ids)
 
         accepted = rejected = 0
         if new_event_ids:
