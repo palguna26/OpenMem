@@ -98,7 +98,6 @@ class MemorySettings:
     """Temporal and reconciliation defaults."""
 
     default_durability: str = "session"
-    max_candidates_per_event: int = 3
     statement_min_chars: int = 10
     statement_max_chars: int = 150
     max_evidence_spans: int = 8

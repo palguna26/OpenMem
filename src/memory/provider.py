@@ -839,9 +839,8 @@ class OpenRouterExtractionProvider:
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
-            # gpt-oss can use part of this allowance for reasoning.  The v3
-            # schema caps records at 12, so a modestly larger completion cap
-            # avoids malformed/truncated JSON without permitting memory flood.
+            # Keep the completion cap configurable for cost and transport
+            # safety; it is not a memory-count policy.
             "max_tokens": extraction_max_tokens,
             "response_format": response_fmt,
             "plugins": [{"id": "response-healing"}],

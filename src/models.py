@@ -293,7 +293,7 @@ class ExtractionResponse(BaseModel):
 
     schema_version: str = Field(pattern=r"^extraction-v1$")
     prompt_version: str = Field(min_length=1, max_length=100)
-    candidates: list[ExtractionCandidate] = Field(max_length=50)
+    candidates: list[ExtractionCandidate] = Field(default_factory=list)
 
 
 class SimpleExtractionResponse(BaseModel):
@@ -307,8 +307,8 @@ class SimpleExtractionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["extraction-v2"] | None = None
-    memory: list[str] = Field(default_factory=list, max_length=50)
-    memories: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    memory: list[str] = Field(default_factory=list)
+    memories: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExtractionMemoryV3(BaseModel):
@@ -326,10 +326,7 @@ class ExtractionResponseV3(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["extraction-v3"] = "extraction-v3"
-    # The processor keeps at most 8-12 records per session.  Matching that
-    # bound in the provider schema prevents smaller models from spending their
-    # whole completion on a long, invalid list and losing the entire session.
-    memories: list[ExtractionMemoryV3] = Field(default_factory=list, max_length=12)
+    memories: list[ExtractionMemoryV3] = Field(default_factory=list)
 
 
 class ExtractionRequest(BaseModel):

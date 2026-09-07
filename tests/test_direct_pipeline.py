@@ -73,9 +73,8 @@ class SimpleResultProvider:
         )
 
 
-def test_event_candidate_pruning_keeps_distinct_memories_and_caps_noise(monkeypatch):
+def test_event_candidate_pruning_keeps_all_distinct_memories():
     event_id = uuid4()
-    monkeypatch.setenv("TERMYTEDB_MAX_CANDIDATES_PER_EVENT", "2")
 
     def candidate(statement: str) -> ExtractionCandidate:
         return ExtractionCandidate(
@@ -94,6 +93,7 @@ def test_event_candidate_pruning_keeps_distinct_memories_and_caps_noise(monkeypa
     assert [item.statement for item in kept] == [
         "User prefers SQLite for local projects.",
         "User works in Bengaluru.",
+        "User has a cat named Miso.",
     ]
 
 
@@ -125,7 +125,7 @@ def test_v3_quality_budget_keeps_small_low_importance_session():
     ]
 
 
-def test_v3_response_schema_caps_provider_output():
+def test_v3_response_schema_allows_any_number_of_memories():
     from src.models import ExtractionMemoryV3, ExtractionResponseV3
 
     memory = ExtractionMemoryV3(
@@ -135,8 +135,7 @@ def test_v3_response_schema_caps_provider_output():
         importance=3,
         lifecycle="stable",
     )
-    with pytest.raises(ValueError):
-        ExtractionResponseV3(memories=[memory] * 13)
+    assert len(ExtractionResponseV3(memories=[memory] * 13).memories) == 13
 
 
 def test_batch_is_one_extraction_call_and_indexes_chunks_and_memories(tmp_path):

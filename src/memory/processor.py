@@ -10,7 +10,6 @@ from difflib import SequenceMatcher
 from typing import Any
 from uuid import UUID
 
-from ..config.settings import MEMORY
 from ..core.logging import log
 from ..core.redaction import redact_text
 from ..models import ExtractionRequest, ReconciliationRequest
@@ -46,24 +45,9 @@ def _get_max_calls() -> int:
         return 10
 
 
-def _max_candidates_per_event() -> int:
-    """Bound noisy one-call extraction without dropping distinct event facts."""
-    raw = os.environ.get("TERMYTEDB_MAX_CANDIDATES_PER_EVENT")
-    try:
-        return max(1, int(raw)) if raw is not None else MEMORY.max_candidates_per_event
-    except ValueError:
-        return MEMORY.max_candidates_per_event
-
-
 def _prune_event_candidates(candidates: list[Any]) -> list[Any]:
-    """Keep the first high-signal, non-duplicate memories from each event.
-
-    The model is instructed to order useful facts first.  This safety cap
-    prevents a chatty turn from flooding retrieval with paraphrases.
-    """
-    limit = _max_candidates_per_event()
+    """Remove near-duplicate memories without imposing a count limit."""
     kept: list[Any] = []
-    counts: dict[str, int] = {}
     prior_statements: dict[str, list[tuple[set[str], str]]] = {}
     for candidate in candidates:
         evidence = list(getattr(candidate, "evidence", []) or [])
@@ -78,10 +62,9 @@ def _prune_event_candidates(candidates: list[Any]) -> list[Any]:
             or SequenceMatcher(None, normalized, prior_text).ratio() >= 0.90
             for prior_terms, prior_text in prior_statements.get(event_id, [])
         )
-        if near_duplicate or counts.get(event_id, 0) >= limit:
+        if near_duplicate:
             continue
         kept.append(candidate)
-        counts[event_id] = counts.get(event_id, 0) + 1
         prior_statements.setdefault(event_id, []).append((terms, normalized))
     return kept
 
@@ -130,58 +113,8 @@ def _enforce_session_quality_budget(
     event_session_map: dict[str, str],
     included: dict[UUID, str],
 ) -> list[Any]:
-    """Importance-based session budget: 3-8 high-value records per session."""
-    archive_mode = os.environ.get("TERMYTEDB_ARCHIVE_MODE", "0").strip().lower() not in {"0", "false", "no", "off"}
-    # Group candidates by primary session (first evidence event's session)
-    grouped: dict[str, list[Any]] = {}
-    for cand in candidates:
-        evs = list(getattr(cand, "evidence", []) or [])
-        # For v3, use first evidence event; for v2, single
-        first_eid = str(evs[0].event_id) if evs else ""
-        session = event_session_map.get(first_eid, "") if first_eid else ""
-        # Fallback: use any evidence session
-        if not session and evs:
-            for ev in evs:
-                s = event_session_map.get(str(ev.event_id), "")
-                if s:
-                    session = s
-                    break
-        session = session or "unknown"
-        grouped.setdefault(session, []).append(cand)
-    result: list[Any] = []
-    for session, items in grouped.items():
-        # Sort by importance (v3 int or float) descending, then statement length descending
-        def importance_key(c):
-            v = getattr(c, "v3_importance_int", None)
-            if isinstance(v, int):
-                return v
-            # fallback to float importance scaled
-            try:
-                return int(float(getattr(c, "importance", 0.5)) * 5)
-            except Exception:
-                return 0
-        items_sorted = sorted(items, key=lambda c: (-importance_key(c), -len(str(c.statement))))
-        # Filter low-value 1-2 unless archive mode.  Do not turn a whole
-        # session into an untraceable zero-output extraction just because the
-        # model assigned its only useful fact a conservative importance score.
-        # This matters for short factual assistant answers and expressed
-        # interests: both are often labelled 1-2 by smaller extraction models.
-        if not archive_mode:
-            filtered = [c for c in items_sorted if importance_key(c) >= 3]
-            # Keep a small grounded coverage floor.  The later per-event cap
-            # and retrieval budget still prevent low-value output from
-            # flooding the answer context.
-            if len(filtered) < 3:
-                filtered = items_sorted[: min(3, len(items_sorted))]
-            items_sorted = filtered
-        # Cap at 8 per session, allow more only when distinct and high-value
-        # For now hard cap 8, but if session has many distinct high-value (importance 5), allow up to 12
-        cap = 8
-        high_count = sum(1 for c in items_sorted if importance_key(c) == 5)
-        if high_count > 8:
-            cap = min(12, len(items_sorted))
-        result.extend(items_sorted[:cap])
-    return result
+    """Preserve every validated candidate; extraction has no count budget."""
+    return list(candidates)
 
 
 def _resolve_v3_candidates(
