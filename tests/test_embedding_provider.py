@@ -4,7 +4,7 @@ import json
 import pytest
 
 from src import TermyteDB
-from src.retrieval.embedding import OpenAICompatibleEmbeddingProvider, batch_dot, pack_embedding
+from src.retrieval.embedding import OpenAICompatibleEmbeddingProvider, batch_dot, cosine, pack_embedding
 
 
 class ConstantEmbedding:
@@ -35,6 +35,15 @@ def test_binary_embedding_batch_dot_product():
     vectors = [pack_embedding([1.0, 0.0]), pack_embedding([0.0, 1.0])]
     scores = batch_dot([1.0, 0.0], vectors, 2)
     assert scores.tolist() == [1.0, 0.0]
+
+
+def test_dense_scoring_is_cosine_consistent_for_non_unit_vectors():
+    vectors = [pack_embedding([10.0, 0.0]), pack_embedding([1.0, 1.0])]
+    scores = batch_dot([2.0, 0.0], vectors, 2).tolist()
+
+    assert scores[0] == pytest.approx(cosine([2.0, 0.0], [10.0, 0.0]))
+    assert scores[1] == pytest.approx(cosine([2.0, 0.0], [1.0, 1.0]))
+    assert scores[0] > scores[1]
 
 
 def test_openrouter_embedding_requests_configured_dimensions(monkeypatch):

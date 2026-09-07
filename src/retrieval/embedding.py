@@ -145,7 +145,13 @@ class OpenAICompatibleEmbeddingProvider:
 def cosine(left: list[float], right: list[float]) -> float:
     if len(left) != len(right):
         raise ValueError("embedding dimensions do not match")
-    score = float(np.dot(np.asarray(left, dtype=np.float32), np.asarray(right, dtype=np.float32)))
+    left_array = np.asarray(left, dtype=np.float32)
+    right_array = np.asarray(right, dtype=np.float32)
+    left_norm = float(np.linalg.norm(left_array))
+    right_norm = float(np.linalg.norm(right_array))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    score = float(np.dot(left_array, right_array) / (left_norm * right_norm))
     return max(0.0, min(1.0, score))
 
 
@@ -165,4 +171,10 @@ def batch_dot(query: list[float], vectors: list[bytes], dimensions: int) -> npt.
     if any(len(vector) != expected_bytes for vector in vectors):
         raise ValueError("stored embedding BLOB has an invalid size")
     matrix = np.frombuffer(b"".join(vectors), dtype="<f4").reshape(len(vectors), dimensions)
-    return np.clip(matrix @ query_array, 0.0, 1.0)
+    query_norm = float(np.linalg.norm(query_array))
+    row_norms = np.linalg.norm(matrix, axis=1)
+    scores = np.zeros(len(vectors), dtype=np.float32)
+    nonzero = (query_norm > 0.0) & (row_norms > 0.0)
+    if query_norm > 0.0:
+        scores[nonzero] = (matrix[nonzero] @ query_array) / (row_norms[nonzero] * query_norm)
+    return np.clip(scores, 0.0, 1.0)
