@@ -19,7 +19,7 @@ def _candidate(statement: str, excerpt: str) -> ExtractionCandidate:
 
 
 def test_semantic_support_does_not_treat_explicit_contradiction_as_support():
-    assert semantic_support("Alice likes coffee", "Alice does not like coffee", "Alice")
+    assert not semantic_support("Alice likes coffee", "Alice does not like coffee", "Alice")
     candidate = _candidate("Alice likes coffee", "Alice does not like coffee")
 
     with pytest.raises(CandidateRejected, match="contradictory_evidence_polarity"):

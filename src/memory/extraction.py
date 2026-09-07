@@ -111,6 +111,8 @@ def semantic_support(statement: str, excerpt: str, subject: str = "", *, thresho
 
     Threshold is relaxed for LLM-first flow (0.35-0.45) vs strict rule fallback (0.60).
     """
+    if _explicit_negation(statement) != _explicit_negation(excerpt):
+        return False
     statement_terms = _significant_terms(statement)
     excerpt_terms = _significant_terms(excerpt)
     if not statement_terms:
