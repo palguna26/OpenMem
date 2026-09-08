@@ -20,7 +20,16 @@ from ..memory.encoding import score_observation
 from ..memory.extraction import CandidateRejected, ValidatedCandidate
 from ..memory.extractor import Candidate, payload_text
 from ..memory.provider import SessionSummaryProvider
-from ..models import EventInput, EvidenceCitation, ExtractionCandidate, MemoryResponse, SearchResult, SessionSearchResult, temporal_recency_score, temporal_valid_at_score
+from ..models import (
+    EventInput,
+    EvidenceCitation,
+    ExtractionCandidate,
+    MemoryResponse,
+    SearchResult,
+    SessionSearchResult,
+    temporal_recency_score,
+    temporal_valid_at_score,
+)
 from ..retrieval.embedding import EmbeddingProvider, FastEmbedProvider, batch_dot, pack_embedding
 from ..retrieval.retrieval import parse_temporal_query as _parse_temporal_query
 from ..retrieval.retrieval import resolve_reference_time as _resolve_reference_time
@@ -1512,7 +1521,6 @@ class Repository:
             )
         # Store v3 diagnostics and multi-event provenance
         try:
-            state_key = getattr(item, "v3_state_key", None)
             lifecycle = getattr(item, "v3_lifecycle", None)
             source_ids_json = json.dumps([str(sp.event_id) for sp in item.evidence])
             # event_dates from evidence events

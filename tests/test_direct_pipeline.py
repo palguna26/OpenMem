@@ -1,5 +1,6 @@
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from src import OpenMem
 from src.memory.processor import _enforce_session_quality_budget, _prune_event_candidates

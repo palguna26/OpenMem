@@ -5,10 +5,8 @@ import pytest
 
 from src import OpenMem
 from src.memory.extraction import validate_candidate
-from src.memory.provider import ProviderError
 from src.models import ExtractionCandidate
 from src.retrieval.chunking import build_chunks
-
 from tests.conftest import event
 
 
@@ -156,7 +154,6 @@ def test_reranking_and_diversity(tmp_path):
 
 # 6. Date-aware ranking selects current and historical versions correctly.
 def test_date_aware_ranking(tmp_path):
-    from datetime import UTC, datetime, timedelta
 
     db = OpenMem(tmp_path / "temporal.sqlite", embedding_provider=RecordingEmbedding())
     # First memory
@@ -168,6 +165,7 @@ def test_date_aware_ranking(tmp_path):
     assert len(current_results) > 0
     # Historical query should be able to surface older evidence
     historical_results = db.search("ns1", "where did user previously live", limit=5, historical=True)
+    assert len(historical_results) > 0
     # Both should have results; temporal signals differ
     for r in current_results:
         assert "temporal_signal" in r.component_scores or "recency" in r.component_scores
@@ -250,7 +248,7 @@ def test_provider_retry_classification():
 # 10. Benchmark tests cover checkpoint, resume, fresh logs, concise progress, and leakage safety.
 def test_benchmark_leakage_safety():
     """Ingestion must never see question, answer, answer_session_ids, or category."""
-    from benchmarks.longmemeval.run_benchmark import build_event_inputs, Sample
+    from benchmarks.longmemeval.run_benchmark import Sample, build_event_inputs
 
     sample = Sample(
         question_id="q1",

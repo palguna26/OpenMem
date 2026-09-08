@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from ..models import ExtractionRequest, ExtractionResponse, ExtractionResponseV3, ReconciliationRequest, ReconciliationResponse, SimpleExtractionResponse
+from ..models import ExtractionRequest, ExtractionResponseV3, ReconciliationRequest, ReconciliationResponse, SimpleExtractionResponse
 
 # ---------------------------------------------------------------------------
 # Extraction prompts - versioned v2 per stage

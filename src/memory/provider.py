@@ -6,6 +6,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -42,7 +43,6 @@ from ..config.prompts import (
 # import build_extraction_prompt` continue to work while config is source of truth.
 from ..models import (
     ExtractionCandidate,
-    ExtractionMemoryV3,
     ExtractionRequest,
     ExtractionResponse,
     ExtractionResponseV3,
@@ -67,9 +67,9 @@ def _parse_retry_after(value: str | None) -> float | None:
 
         dt = parsedate_to_datetime(value)
         if dt is not None:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             delta = (dt - now).total_seconds()
             return max(0.0, delta)
     except Exception:
@@ -186,8 +186,8 @@ def _v3_type_to_kind(t: str) -> str:
     return mapping.get(t, "fact")
 
 
-def _v3_lifecycle_to_durability(l: str) -> str:
-    if l == "task":
+def _v3_lifecycle_to_durability(lifecycle: str) -> str:
+    if lifecycle == "task":
         return "task"
     return "permanent"
 
@@ -878,7 +878,7 @@ class OpenRouterExtractionProvider:
                     raise ValueError("empty extraction content")
                 parsed = _simple_response_to_extraction(json.loads(clean_json_response(choice)), request)
                 break
-            except (UnicodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as exc:
+            except (UnicodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
                 # A completed request with unusable model output is not an
                 # ingestion failure. Retry it once, then preserve the events
                 # and record an empty extraction, just as Mem0 does.

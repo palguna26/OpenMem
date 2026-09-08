@@ -3,7 +3,13 @@ from uuid import uuid4
 
 import pytest
 
-from src.memory.provider import HttpExtractionProvider, OpenRouterExtractionProvider, ProviderError, _message_text, _simple_response_to_extraction, build_extraction_prompt
+from src.memory.provider import (
+    HttpExtractionProvider,
+    OpenRouterExtractionProvider,
+    _message_text,
+    _simple_response_to_extraction,
+    build_extraction_prompt,
+)
 from src.models import ExtractionRequest
 from src.storage.repository import _openrouter_rerank
 

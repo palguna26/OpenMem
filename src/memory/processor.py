@@ -476,7 +476,6 @@ class Processor:
         # Multi-pass extraction
         extraction_schema = _get_extraction_schema()
         event_labels = {f"e{index + 1}": event_id for index, event_id in enumerate(included)}
-        reverse_labels = {str(v): k for k, v in event_labels.items()}
         event_roles: dict[UUID, str] = {}
         for event_id, text in included.items():
             # Resolve role from stored events or fallback to current_events
