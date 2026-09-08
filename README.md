@@ -1,37 +1,71 @@
 # OpenMem
 
-OpenMem is an embedded memory engine for AI agents. It stores conversation events in SQLite, extracts durable memories with evidence, reconciles updates, and retrieves relevant memories via search. OpenMem returns memories — the caller decides how those memories become model context.
+OpenMem is an embedded memory engine for AI agents. It turns conversation events into durable, evidence-backed memories and retrieves them with hybrid lexical and vector search.
+
+It runs in one Python process and stores data in SQLite. OpenMem owns memory storage and retrieval; your application decides how retrieved memories become model context.
+
+> Early-stage project: the public API and storage format may change before the first stable release.
+
+## What it does
+
+- Stores raw events durably before running extraction.
+- Redacts common secrets before persistence and extraction.
+- Extracts facts, decisions, preferences, procedures, task state, and related memory kinds.
+- Keeps source event IDs and evidence excerpts with memories.
+- Handles updates, superseded memories, invalidation, forgetting, restoration, and history.
+- Searches with SQLite FTS plus vector similarity, with temporal and preference-aware ranking.
+- Supports offline tests through `FakeExtractionProvider`.
+- Supports OpenAI-compatible extraction through OpenRouter or a custom HTTP endpoint.
+- Keeps failed processing jobs retryable after provider failures.
 
 ## Install
+
+Requires Python 3.11 or newer.
 
 ```powershell
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
 
-## Use
+Install benchmark dependencies only when needed:
 
-Provider is explicit. Use `FakeExtractionProvider` for offline/tests and `OpenRouterExtractionProvider` in production.
+```powershell
+python -m pip install -e ".[benchmark]"
+```
+
+## Quick start
+
+The fake provider is deterministic and does not make network requests. It is the fastest way to try the engine.
 
 ```python
 from src import OpenMem
 from src.memory.provider import FakeExtractionProvider
 
-# Offline / tests (no network, single LLM call per ingest by default)
 db = OpenMem("memory.sqlite", extraction_provider=FakeExtractionProvider())
+
 db.ingest({
     "namespace_id": "demo",
     "idempotency_key": "event-1",
     "type": "decision",
-    "payload": {"text": "Decision: use SQLite."},
+    "payload": {"text": "Decision: use SQLite for local storage."},
 })
-results = db.search("demo", "database choice", limit=5)
-for memory in results:
+
+for memory in db.search("demo", "database choice", limit=5):
     print(memory.statement)
+
 db.close()
 ```
 
-Production:
+Each event must have a namespace and an idempotency key. Repeating the same idempotency key in a namespace is safe and returns the original event receipt.
+
+## Production extraction
+
+OpenRouter extraction is explicit. Set a model and API key, then pass the provider to `OpenMem`:
+
+```powershell
+$env:OPENROUTER_API_KEY = "your-key"
+$env:OPENMEM_EXTRACTION_MODEL = "your-provider/your-model"
+```
 
 ```python
 import os
@@ -45,49 +79,46 @@ db = OpenMem(
         api_key=os.environ["OPENROUTER_API_KEY"],
     ),
 )
-# Extraction uses one Mem0-style LLM call per batch and returns a small
-# {"memory": ["..."]} list. Optional LLM reconciliation is off by default.
-# os.environ["OPENMEM_RECONCILIATION_ENABLED"] = "1"
-db.ingest({
-    "namespace_id": "demo",
-    "idempotency_key": "event-1",
-    "type": "decision",
-    "payload": {"text": "Decision: use SQLite."},
-})
-# If ingest raises ProviderError (e.g. 429), the event is durably stored and a retryable
-# processing job remains. Retry with:
-#   db.process("demo")
-results = db.search("demo", "database choice", limit=5)
-db.close()
 ```
+
+If a provider call fails, the event remains stored and a retryable job is kept. Retry pending work with `db.process("demo")`.
+
+## Documentation
+
+- [Getting started](docs/getting-started.md) — install, ingest, search, and configure a provider.
+- [Architecture](docs/architecture.md) — storage, extraction, evidence, retrieval, and recovery.
+- [API reference](docs/api-reference.md) — public `OpenMem` methods and event models.
+- [Configuration reference](docs/configuration.md) — environment variables and defaults.
+- [Benchmarking](docs/benchmarking.md) — run the LongMemEval-S and micro benchmarks.
+- [Contributing](CONTRIBUTING.md) — local workflow and pull request expectations.
+- [Security policy](SECURITY.md) — reporting vulnerabilities and handling secrets.
 
 ## LongMemEval-S
 
-The dataset and single benchmark runner live in `benchmarks/longmemeval`.
+The benchmark runner is in `benchmarks/longmemeval`.
 
 ```powershell
 python -m pip install -e ".[benchmark]"
-python benchmarks/longmemeval/run_benchmark.py --mode end-to-end --confirm-benchmark
-```
-
-### LongMemEval-Micro (30 samples, ~94% cheaper)
-
-Stratified subset of LongMemEval-S with 5 questions per category (30 total) across
-`single-session-user`, `single-session-assistant`, `single-session-preference`,
-`knowledge-update`, `temporal-reasoning`, `multi-session`.
-
-```powershell
-# Retrieval-only (zero LLM cost) on micro subset
 python benchmarks/longmemeval/run_benchmark.py --mode retrieval --micro --confirm-benchmark
-
-# End-to-end (OpenRouter extraction/embedding) on micro — ~16× cheaper than full 500
-python benchmarks/longmemeval/run_benchmark.py --mode end-to-end --micro --confirm-benchmark
-
-# Or point explicitly at the micro file
-python benchmarks/longmemeval/run_benchmark.py --mode retrieval --data-path benchmarks/longmemeval/longmemeval_micro.json --confirm-benchmark
-
-# Regenerate the subset (deterministic seed 42, excludes _abs abstentions)
-python benchmarks/longmemeval/create_micro.py
 ```
 
-Files: `benchmarks/longmemeval/longmemeval_micro.json` and alias `longmemeval-micro.json`.
+See [the benchmark guide](docs/benchmarking.md) for the full dataset workflow and cost notes.
+
+## Project layout
+
+```text
+src/
+  engine.py              Public OpenMem facade
+  models.py              Pydantic input and response models
+  memory/                Extraction, processing, reconciliation
+  retrieval/             Chunking, embeddings, ranking, context packing
+  storage/               SQLite stores, jobs, integrity, vector index
+  config/                Provider and retrieval settings
+tests/                   Unit, integration, reliability, and security tests
+benchmarks/              LongMemEval-S runner and micro dataset tools
+docs/                    User and contributor documentation
+```
+
+## License
+
+OpenMem is available under the [MIT License](LICENSE).
