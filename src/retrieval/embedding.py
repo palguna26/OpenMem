@@ -64,14 +64,14 @@ class OpenAICompatibleEmbeddingProvider:
         timeout: float = 60.0,
         retries: int = 3,
     ) -> None:
-        self.model = model or os.environ.get("TERMYTEDB_EMBEDDING_MODEL", "")
+        self.model = model or os.environ.get("OPENMEM_EMBEDDING_MODEL", "")
         if not self.model:
-            raise ValueError("TERMYTEDB_EMBEDDING_MODEL is required")
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("TERMYTEDB_EMBEDDING_API_KEY")
+            raise ValueError("OPENMEM_EMBEDDING_MODEL is required")
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENMEM_EMBEDDING_API_KEY")
         if not self.api_key:
             raise ValueError("an embedding API key is required")
-        self.base_url = (base_url or os.environ.get("TERMYTEDB_EMBEDDING_BASE_URL", _embed_cfg.OPENAI_DEFAULT_BASE_URL)).rstrip("/")
-        configured_dimensions = dimensions or int(os.environ.get("TERMYTEDB_EMBEDDING_DIMENSIONS", str(_EMBEDDING_SETTINGS.openai_default_dimensions)))
+        self.base_url = (base_url or os.environ.get("OPENMEM_EMBEDDING_BASE_URL", _embed_cfg.OPENAI_DEFAULT_BASE_URL)).rstrip("/")
+        configured_dimensions = dimensions or int(os.environ.get("OPENMEM_EMBEDDING_DIMENSIONS", str(_EMBEDDING_SETTINGS.openai_default_dimensions)))
         self.dimensions = configured_dimensions
         if configured_dimensions < 1:
             raise ValueError("embedding dimensions must be positive")
@@ -99,8 +99,8 @@ class OpenAICompatibleEmbeddingProvider:
         }
         # OpenRouter attribution headers are optional, but use its documented
         # casing so requests show up correctly in the provider dashboard.
-        referer = os.environ.get("OPENROUTER_HTTP_REFERER", "https://termyte.dev")
-        title = os.environ.get("OPENROUTER_TITLE", "TermyteDB")
+        referer = os.environ.get("OPENROUTER_HTTP_REFERER", "https://openmem.dev")
+        title = os.environ.get("OPENROUTER_TITLE", "OpenMem")
         if referer:
             headers["HTTP-Referer"] = referer
         if title:

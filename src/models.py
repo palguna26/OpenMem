@@ -299,7 +299,7 @@ class ExtractionResponse(BaseModel):
 class SimpleExtractionResponse(BaseModel):
     """Small, Mem0-style LLM contract used for production extraction.
 
-    Provenance and storage metadata are created by TermyteDB after the model
+    Provenance and storage metadata are created by OpenMem after the model
     returns these memory statements.  Keeping the LLM response this small makes
     it work with a much wider range of models.
     """

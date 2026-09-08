@@ -251,7 +251,7 @@ def build_extraction_prompt(request: ExtractionRequest) -> str:
         "Do NOT treat every product, tool, or activity mention as a preference; require explicit like/prefer/love/favorite/dislike/hate/avoid language. "
         "Omit greetings, small talk, and repeated paraphrases. "
         "For every memory, cite the event label where it came from. Do not invent labels. "
-        "TermyteDB handles chunks, roles, dates, evidence spans, identity, and updates; do not return them. "
+        "OpenMem handles chunks, roles, dates, evidence spans, identity, and updates; do not return them. "
         "Return only JSON in exactly this shape: {\"schema_version\":\"extraction-v2\",\"memories\":[{\"memory\":\"short standalone fact\",\"source_event\":\"e1\"}]}. "
         "Use an empty memories list only when there is nothing worth remembering. "
         "\n\n"
@@ -429,7 +429,7 @@ def extraction_response_format_v3() -> dict[str, object]:
 def get_extraction_schema() -> str:
     import os
 
-    raw = os.environ.get("TERMYTEDB_EXTRACTION_SCHEMA", "v2").strip().lower()
+    raw = os.environ.get("OPENMEM_EXTRACTION_SCHEMA", "v2").strip().lower()
     if raw in {"v3", "extraction-v3", "extraction_v3", "3"}:
         return "v3"
     return "v2"

@@ -46,7 +46,7 @@ def iso(value: datetime | None = None) -> str:
 
 
 def stable_uuid(namespace_id: str, idempotency_key: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"termytedb:event:{namespace_id}:{idempotency_key}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"openmem:event:{namespace_id}:{idempotency_key}"))
 
 
 def hash_text(value: str) -> str:
@@ -110,7 +110,7 @@ class EventStore:
             payload_json = json.dumps(redacted_payload, sort_keys=True, separators=(",", ":"))
             content_hash = hash_text(canonical_event_content(event, redacted_payload))
             occurred = iso(event.occurred_at)
-            observation_text = payload_text({**redacted_payload, "__termytedb_event_type": event.type})
+            observation_text = payload_text({**redacted_payload, "__openmem_event_type": event.type})
             prior_count = (
                 int(
                     self.db.execute(
@@ -234,7 +234,7 @@ class EventStore:
                 selected = row
                 break
         if selected is None:
-            episode_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"termytedb:episode:{namespace_id}:{event_id}"))
+            episode_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"openmem:episode:{namespace_id}:{event_id}"))
             self.db.execute(
                 """INSERT INTO episodes(id, namespace_id, stream_id, start_event_id, end_event_id, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -355,7 +355,7 @@ class EventStore:
         snippets: list[str] = []
         seen: set[str] = set()
         for row in rows:
-            text = payload_text({**json.loads(row["payload_json"]), "__termytedb_event_type": row["type"]})
+            text = payload_text({**json.loads(row["payload_json"]), "__openmem_event_type": row["type"]})
             text = " ".join(text.split())
             if not text:
                 continue

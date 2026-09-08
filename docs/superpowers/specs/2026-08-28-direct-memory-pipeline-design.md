@@ -2,13 +2,13 @@
 
 ## Goal
 
-Make TermyteDB behave like Mem0 at the API and execution level while keeping TermyteDB's current memory model, temporal reasoning, evidence, reconciliation, retrieval, and reranking.
+Make OpenMem behave like Mem0 at the API and execution level while keeping OpenMem's current memory model, temporal reasoning, evidence, reconciliation, retrieval, and reranking.
 
 An ingestion call must complete extraction, embedding, reconciliation, and storage before it returns. Applications must not need to call `process()`.
 
 ## Scope
 
-This change replaces the main queue-based ingestion workflow with a direct pipeline. It does not replace TermyteDB's memory kinds, temporal fields, evidence validation, memory history, superseding rules, search, context packing, or reranking.
+This change replaces the main queue-based ingestion workflow with a direct pipeline. It does not replace OpenMem's memory kinds, temporal fields, evidence validation, memory history, superseding rules, search, context packing, or reranking.
 
 ## Public Behavior
 
@@ -27,7 +27,7 @@ Compatibility helpers may remain temporarily, but they must not create or depend
 1. Validate events, redact secrets, enforce payload limits, and verify that one batch belongs to one namespace.
 2. Store raw events and artifacts with idempotency protection.
 3. Build one evidence map from the new events and a bounded recent-context window.
-4. Retrieve related existing memories using the current TermyteDB retrieval logic.
+4. Retrieve related existing memories using the current OpenMem retrieval logic.
 5. Send one extraction request containing the new evidence, recent context, and existing memory references.
 6. Validate every candidate using current evidence and temporal rules.
 7. Embed all accepted candidate statements with one `embed_many()` call.
@@ -57,7 +57,7 @@ One call runs its phases in order. Separate calls may run concurrently. Existing
 
 ## Retrieval
 
-Search and context APIs stay unchanged. They continue to use TermyteDB's current lexical and dense retrieval, temporal and lifecycle filtering, context packing, and optional reranking.
+Search and context APIs stay unchanged. They continue to use OpenMem's current lexical and dense retrieval, temporal and lifecycle filtering, context packing, and optional reranking.
 
 ## Benchmark
 
@@ -80,7 +80,7 @@ Tests must cover:
 
 ## Out of Scope
 
-- Replacing TermyteDB's memory algorithm with Mem0's algorithm;
+- Replacing OpenMem's memory algorithm with Mem0's algorithm;
 - changing temporal reasoning or memory kinds;
 - redesigning search, context packing, or reranking;
 - adding a distributed task system;

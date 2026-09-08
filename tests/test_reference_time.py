@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from src import TermyteDB
+from src import OpenMem
 from src.models import TemporalQuery as ModelsTemporalQuery
 from src.models import temporal_recency_score, temporal_valid_at_score
 from src.retrieval.embedding import pack_embedding
@@ -32,12 +32,12 @@ class ConstantEmbedding:
         return [[1.0, 0.0] for _ in values]
 
 
-def make_db(tmp_path: Path, name: str = "t.sqlite") -> TermyteDB:
-    return TermyteDB(tmp_path / name, embedding_provider=ConstantEmbedding())
+def make_db(tmp_path: Path, name: str = "t.sqlite") -> OpenMem:
+    return OpenMem(tmp_path / name, embedding_provider=ConstantEmbedding())
 
 
 def insert_memory(
-    db: TermyteDB,
+    db: OpenMem,
     namespace: str,
     key: str,
     statement: str,

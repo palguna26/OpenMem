@@ -143,9 +143,9 @@ def test_openrouter_provider_requests_simple_memory_schema(monkeypatch):
 
 
 def test_openrouter_extraction_requires_explicit_model(monkeypatch):
-    monkeypatch.delenv("TERMYTEDB_EXTRACTION_MODEL", raising=False)
+    monkeypatch.delenv("OPENMEM_EXTRACTION_MODEL", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    with pytest.raises(ValueError, match="TERMYTEDB_EXTRACTION_MODEL"):
+    with pytest.raises(ValueError, match="OPENMEM_EXTRACTION_MODEL"):
         OpenRouterExtractionProvider()
 
 
@@ -185,7 +185,7 @@ def test_openrouter_retries_unusable_content_then_returns_no_memories(monkeypatc
         return Response()
 
     monkeypatch.setattr("src.memory.provider.urlopen", fake_urlopen)
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_RETRIES", "1")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_RETRIES", "1")
     monkeypatch.setattr("src.memory.provider._retry_sleep", lambda *_args: 0.0)
     result = OpenRouterExtractionProvider("test", api_key="test-key").extract(request())
 

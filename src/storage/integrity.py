@@ -188,7 +188,7 @@ def repair_fts(database: Database, embedding: EmbeddingProvider | None = None) -
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check or safely repair TermyteDB SQLite integrity")
+    parser = argparse.ArgumentParser(description="Check or safely repair OpenMem SQLite integrity")
     parser.add_argument("--database", required=True)
     parser.add_argument("--repair-fts", action="store_true")
     args = parser.parse_args()

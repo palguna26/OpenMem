@@ -2,12 +2,12 @@
 
 ## Goal
 
-TermyteDB must never select a free model or silently choose a remote model. Users must configure the models they intend to use.
+OpenMem must never select a free model or silently choose a remote model. Users must configure the models they intend to use.
 
 ## Behavior
 
-- OpenRouter extraction requires an explicit constructor model or `TERMYTEDB_EXTRACTION_MODEL`.
-- OpenRouter summaries require an explicit constructor model or `TERMYTEDB_SUMMARY_MODEL`.
+- OpenRouter extraction requires an explicit constructor model or `OPENMEM_EXTRACTION_MODEL`.
+- OpenRouter summaries require an explicit constructor model or `OPENMEM_SUMMARY_MODEL`.
 - The LongMemEval end-to-end benchmark requires extraction and embedding model configuration before it creates a run directory or sends requests.
 - Missing configuration raises a clear `ValueError` or command-line error naming the required setting.
 - No source default may select a free-model alias.
@@ -17,9 +17,9 @@ TermyteDB must never select a free model or silently choose a remote model. User
 The normal environment settings are:
 
 ```text
-TERMYTEDB_EXTRACTION_MODEL=<provider/model>
-TERMYTEDB_EMBEDDING_MODEL=<provider/model>
-TERMYTEDB_SUMMARY_MODEL=<provider/model>
+OPENMEM_EXTRACTION_MODEL=<provider/model>
+OPENMEM_EMBEDDING_MODEL=<provider/model>
+OPENMEM_SUMMARY_MODEL=<provider/model>
 ```
 
 Summary configuration is required only when an OpenRouter summary provider is used.

@@ -19,7 +19,7 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, sort_keys=True)
 
 
-def get_logger(name: str = "termytedb") -> logging.Logger:
+def get_logger(name: str = "openmem") -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = logging.StreamHandler()

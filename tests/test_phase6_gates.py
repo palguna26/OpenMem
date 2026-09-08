@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from src import TermyteDB
+from src import OpenMem
 from src.memory.extraction import validate_candidate
 from src.memory.provider import ProviderError
 from src.models import ExtractionCandidate
@@ -59,7 +59,7 @@ def test_chunking_preserves_order_and_boundaries():
 
 # 2. Extraction rejects memories with unknown source chunk IDs.
 def test_extraction_rejects_unknown_source_chunk_ids(tmp_path):
-    db = TermyteDB(tmp_path / "chunk-ground.sqlite", embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "chunk-ground.sqlite", embedding_provider=RecordingEmbedding())
     db.ingest(event("ns1", "k1", "User prefers SQLite for local projects."))
     # Get valid chunk IDs
     valid_ids = db.repository.chunk_ids_for_namespace("ns1")
@@ -106,8 +106,8 @@ def test_contextual_text_does_not_change_raw():
 
 # 4. Hybrid search covers FTS, source vectors, and contextual vectors.
 def test_hybrid_search_covers_three_streams(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_ALLOW_FAKE_EXTRACTION", "1")
-    db = TermyteDB(tmp_path / "hybrid.sqlite", embedding_provider=RecordingEmbedding())
+    monkeypatch.setenv("OPENMEM_ALLOW_FAKE_EXTRACTION", "1")
+    db = OpenMem(tmp_path / "hybrid.sqlite", embedding_provider=RecordingEmbedding())
     # Ingest events that will create both memory FTS and chunk contextual signals
     db.ingest(event("ns1", "k1", "Decision: use SQLite with WAL for local storage."))
     db.ingest(event("ns1", "k2", "We decided to use PostgreSQL for the cloud service."))
@@ -129,7 +129,7 @@ def test_hybrid_search_covers_three_streams(tmp_path, monkeypatch):
 
 # 5. Reranking improves candidate order and respects diversity limits.
 def test_reranking_and_diversity(tmp_path):
-    db = TermyteDB(tmp_path / "rerank.sqlite", embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "rerank.sqlite", embedding_provider=RecordingEmbedding())
     # Create multiple events in same session and different sessions
     for i in range(6):
         db.ingest(event("ns1", f"k{i}", f"Fact {i}: User likes item {i}. SQLite mentioned here for fact {i}."))
@@ -158,7 +158,7 @@ def test_reranking_and_diversity(tmp_path):
 def test_date_aware_ranking(tmp_path):
     from datetime import UTC, datetime, timedelta
 
-    db = TermyteDB(tmp_path / "temporal.sqlite", embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "temporal.sqlite", embedding_provider=RecordingEmbedding())
     # First memory
     db.ingest(event("ns1", "k1", "User lives in Delhi."))
     # Update: move to Pune
@@ -176,7 +176,7 @@ def test_date_aware_ranking(tmp_path):
 
 # 7. Relationship expansion respects hop, result, and token limits.
 def test_relationship_expansion_limits(tmp_path):
-    db = TermyteDB(tmp_path / "graph.sqlite", embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "graph.sqlite", embedding_provider=RecordingEmbedding())
     db.ingest(event("ns1", "k1", "User works with Arnav on the API."))
     # Seed at least one memory
     memories = db.memories("ns1")
@@ -199,7 +199,7 @@ def test_relationship_expansion_limits(tmp_path):
 def test_context_packing_token_budget(tmp_path):
     from src.retrieval.context import pack_evidence
 
-    db = TermyteDB(tmp_path / "pack.sqlite", embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "pack.sqlite", embedding_provider=RecordingEmbedding())
     for i in range(10):
         db.ingest(event("ns1", f"k{i}", f"Memory fact number {i} about SQLite and preferences."))
 
@@ -276,7 +276,7 @@ def test_benchmark_leakage_safety():
 
 
 def test_chunk_session_boundaries_and_query_weights(tmp_path):
-    db = TermyteDB(tmp_path / "weights.sqlite", embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "weights.sqlite", embedding_provider=RecordingEmbedding())
     qw = db.repository._query_weights('Which code version "abc123" was used?')
     assert qw["fts"] > 1.0  # identifiers boost FTS
     qw2 = db.repository._query_weights("What do I prefer and why do I feel this way?")

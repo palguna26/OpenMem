@@ -87,7 +87,7 @@ def _openrouter_chat(base_url: str, api_key: str | None, body: dict[str, object]
             headers={
                 "authorization": f"Bearer {api_key}",
                 "content-type": "application/json",
-                "http-referer": "https://termyte.dev",
+                "http-referer": "https://openmem.dev",
                 "X-OpenRouter-Title": title,
             },
             method="POST",
@@ -108,7 +108,7 @@ def _retry_sleep(attempt: int, retry_after: float | None) -> float:
 
 
 def _get_retry_budget() -> int:
-    raw = os.environ.get("TERMYTEDB_EXTRACTION_RETRIES")
+    raw = os.environ.get("OPENMEM_EXTRACTION_RETRIES")
     if raw is None:
         # One retry keeps ingestion resilient without multiplying benchmark cost.
         return 1
@@ -389,11 +389,11 @@ def _empty_extraction_response() -> ExtractionResponse:
 
 
 def configured_extraction_provider() -> ExtractionProvider | None:
-    endpoint = os.environ.get("TERMYTEDB_EXTRACTION_URL")
-    model = os.environ.get("TERMYTEDB_EXTRACTION_MODEL")
-    api_key = os.environ.get("TERMYTEDB_EXTRACTION_API_KEY")
-    base_url = os.environ.get("TERMYTEDB_EXTRACTION_BASE_URL")
-    provider_name = os.environ.get("TERMYTEDB_EXTRACTION_PROVIDER")
+    endpoint = os.environ.get("OPENMEM_EXTRACTION_URL")
+    model = os.environ.get("OPENMEM_EXTRACTION_MODEL")
+    api_key = os.environ.get("OPENMEM_EXTRACTION_API_KEY")
+    base_url = os.environ.get("OPENMEM_EXTRACTION_BASE_URL")
+    provider_name = os.environ.get("OPENMEM_EXTRACTION_PROVIDER")
 
     if provider_name == "http" or endpoint:
         return HttpExtractionProvider(endpoint, model, api_key)
@@ -406,9 +406,9 @@ def default_extraction_provider() -> ExtractionProvider:
     provider = configured_extraction_provider()
     if provider is not None:
         return provider
-    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TERMYTEDB_ALLOW_FAKE_EXTRACTION") == "1":
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("OPENMEM_ALLOW_FAKE_EXTRACTION") == "1":
         return FakeExtractionProvider()
-    raise ValueError("no extraction provider configured; set TERMYTEDB_EXTRACTION_URL or OPENROUTER_API_KEY, or pass extraction_provider explicitly")
+    raise ValueError("no extraction provider configured; set OPENMEM_EXTRACTION_URL or OPENROUTER_API_KEY, or pass extraction_provider explicitly")
 
 
 @dataclass(frozen=True)
@@ -688,7 +688,7 @@ class FakeSessionSummaryProvider:
 class HttpExtractionProvider:
     """Generic HTTP JSON provider - DEPRECATED, prefer OpenRouterExtractionProvider.
 
-    Kept for backward compat with TERMYTEDB_EXTRACTION_URL. New code should use
+    Kept for backward compat with OPENMEM_EXTRACTION_URL. New code should use
     OpenRouterExtractionProvider which handles strict JSON schema and retry
     semantics. This class will be removed in next major version (see config/providers.py).
     """
@@ -696,9 +696,9 @@ class HttpExtractionProvider:
     name = "http"
 
     def __init__(self, endpoint: str | None = None, model: str | None = None, api_key: str | None = None):
-        self.endpoint = endpoint or os.environ.get("TERMYTEDB_EXTRACTION_URL", "")
-        self.model = model or os.environ.get("TERMYTEDB_EXTRACTION_MODEL", "configured")
-        self.api_key = api_key or os.environ.get("TERMYTEDB_EXTRACTION_API_KEY")
+        self.endpoint = endpoint or os.environ.get("OPENMEM_EXTRACTION_URL", "")
+        self.model = model or os.environ.get("OPENMEM_EXTRACTION_MODEL", "configured")
+        self.api_key = api_key or os.environ.get("OPENMEM_EXTRACTION_API_KEY")
         if not self.endpoint:
             raise ValueError("an extraction endpoint is required")
 
@@ -800,12 +800,12 @@ class OpenRouterExtractionProvider:
     name = "openrouter"
 
     def __init__(self, model: str | None = None, api_key: str | None = None, base_url: str | None = None):
-        self.model = model or os.environ.get("TERMYTEDB_EXTRACTION_MODEL", "")
+        self.model = model or os.environ.get("OPENMEM_EXTRACTION_MODEL", "")
         if not self.model:
-            raise ValueError("TERMYTEDB_EXTRACTION_MODEL is required")
-        self.api_key = api_key or os.environ.get("TERMYTEDB_EXTRACTION_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+            raise ValueError("OPENMEM_EXTRACTION_MODEL is required")
+        self.api_key = api_key or os.environ.get("OPENMEM_EXTRACTION_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
         self.base_url = (
-            base_url or os.environ.get("TERMYTEDB_EXTRACTION_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            base_url or os.environ.get("OPENMEM_EXTRACTION_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         ).rstrip("/")
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is required")
@@ -822,14 +822,14 @@ class OpenRouterExtractionProvider:
         stage = getattr(request, "stage", "facts") or "facts"
         # Use stage-specific temperature if configured via env
         try:
-            temperature = float(os.environ.get("TERMYTEDB_EXTRACTION_TEMPERATURE", "0"))
+            temperature = float(os.environ.get("OPENMEM_EXTRACTION_TEMPERATURE", "0"))
         except ValueError:
             temperature = 0.0
         is_v3 = getattr(request, "extraction_schema", "v2") == "v3"
         system_content = "Return only valid JSON matching the supplied extraction-v3 schema." if is_v3 else "Return only valid JSON matching the supplied memory-list schema."
         response_fmt = _extraction_response_format_v3() if is_v3 else _extraction_response_format()
         try:
-            extraction_max_tokens = max(512, int(os.environ.get("TERMYTEDB_EXTRACTION_MAX_TOKENS", "3500")))
+            extraction_max_tokens = max(512, int(os.environ.get("OPENMEM_EXTRACTION_MAX_TOKENS", "3500")))
         except ValueError:
             extraction_max_tokens = 3500
         body = {
@@ -872,7 +872,7 @@ class OpenRouterExtractionProvider:
             if call_timeout < 0.2:
                 raise last_exc if last_exc else ProviderError("extraction timeout", retryable=True, error_class="timeout")  # type: ignore[misc]
             try:
-                payload, raw_bytes = _openrouter_chat(self.base_url, self.api_key, body, title=f"TermyteDB Memory Extraction {stage}", timeout=call_timeout)
+                payload, raw_bytes = _openrouter_chat(self.base_url, self.api_key, body, title=f"OpenMem Memory Extraction {stage}", timeout=call_timeout)
                 choice = _message_text(payload, text_parts_only=True)
                 if not choice.strip():
                     raise ValueError("empty extraction content")
@@ -978,10 +978,10 @@ class OpenRouterExtractionProvider:
             raise ProviderError("reconciliation cancelled", retryable=True, error_class="cancelled")
         prompt = _build_reconciliation_prompt(request)
         try:
-            temperature = float(os.environ.get("TERMYTEDB_RECONCILIATION_TEMPERATURE", os.environ.get("TERMYTEDB_EXTRACTION_TEMPERATURE", "0")))
+            temperature = float(os.environ.get("OPENMEM_RECONCILIATION_TEMPERATURE", os.environ.get("OPENMEM_EXTRACTION_TEMPERATURE", "0")))
         except ValueError:
             temperature = 0.0
-        reconciliation_model = os.environ.get("TERMYTEDB_RECONCILIATION_MODEL") or self.model
+        reconciliation_model = os.environ.get("OPENMEM_RECONCILIATION_MODEL") or self.model
         body = {
             "model": reconciliation_model,
             "messages": [
@@ -1015,7 +1015,7 @@ class OpenRouterExtractionProvider:
             if call_timeout < 0.2:
                 raise last_exc if last_exc else ProviderError("reconciliation timeout", retryable=True, error_class="timeout")  # type: ignore[misc]
             try:
-                payload, raw_bytes = _openrouter_chat(self.base_url, self.api_key, body, title="TermyteDB Reconciliation", timeout=call_timeout)
+                payload, raw_bytes = _openrouter_chat(self.base_url, self.api_key, body, title="OpenMem Reconciliation", timeout=call_timeout)
                 break
             except HTTPError as exc:
                 detail = ""
@@ -1103,16 +1103,16 @@ class OpenRouterSessionSummaryProvider:
     name = "openrouter-summary"
 
     def __init__(self, model: str | None = None, api_key: str | None = None, base_url: str | None = None):
-        self.model = model or os.environ.get("TERMYTEDB_SUMMARY_MODEL") or os.environ.get("TERMYTEDB_EXTRACTION_MODEL") or ""
+        self.model = model or os.environ.get("OPENMEM_SUMMARY_MODEL") or os.environ.get("OPENMEM_EXTRACTION_MODEL") or ""
         if not self.model:
-            raise ValueError("TERMYTEDB_SUMMARY_MODEL or TERMYTEDB_EXTRACTION_MODEL is required")
+            raise ValueError("OPENMEM_SUMMARY_MODEL or OPENMEM_EXTRACTION_MODEL is required")
         self.api_key = (
-            api_key or os.environ.get("TERMYTEDB_SUMMARY_API_KEY") or os.environ.get("TERMYTEDB_EXTRACTION_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+            api_key or os.environ.get("OPENMEM_SUMMARY_API_KEY") or os.environ.get("OPENMEM_EXTRACTION_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
         )
         self.base_url = (
             base_url
-            or os.environ.get("TERMYTEDB_SUMMARY_BASE_URL")
-            or os.environ.get("TERMYTEDB_EXTRACTION_BASE_URL")
+            or os.environ.get("OPENMEM_SUMMARY_BASE_URL")
+            or os.environ.get("OPENMEM_EXTRACTION_BASE_URL")
             or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         ).rstrip("/")
         if not self.api_key:
@@ -1126,6 +1126,6 @@ class OpenRouterSessionSummaryProvider:
             "temperature": 0,
             "max_tokens": 220,
         }
-        payload, _ = _openrouter_chat(self.base_url, self.api_key, body, title="TermyteDB Session Summary", timeout=45.0)
+        payload, _ = _openrouter_chat(self.base_url, self.api_key, body, title="OpenMem Session Summary", timeout=45.0)
         summary = " ".join(_message_text(payload).split())
         return summary[:400]

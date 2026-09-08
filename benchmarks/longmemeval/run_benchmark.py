@@ -1,4 +1,4 @@
-"""LongMemEval-S benchmark for TermyteDB.
+"""LongMemEval-S benchmark for OpenMem.
 
 Canonical harness supporting two distinct benchmark pipelines:
 
@@ -24,7 +24,7 @@ and ``evaluate_sample_e2e``.
 
 Modes:
   retrieval / retrieval-only  Zero-cost session-level retrieval (atoms)
-  end-to-end                 Production pipeline via TermyteDB events/memories
+  end-to-end                 Production pipeline via OpenMem events/memories
   judged                     retrieval-only + OpenRouter answer generation/judging
 """
 
@@ -123,26 +123,26 @@ _BENCHMARK_LOGGER = logging.getLogger("longmemeval.benchmark")
 def _configure_benchmark_logging(log_path: Path, *, append: bool) -> None:
     """Keep the terminal concise while retaining full engine diagnostics."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    termyte_logger = logging.getLogger("termytedb")
-    termyte_logger.setLevel(logging.INFO)
+    openmem_logger = logging.getLogger("openmem")
+    openmem_logger.setLevel(logging.INFO)
     # The library logger normally prints every accepted event to stderr. Keep
     # that detail in the run log instead; progress belongs to the CLI.
     # Remove terminal handlers altogether.  Setting their level is not enough:
     # a later logger configuration can lower it again and flood the CLI.
-    for handler in list(termyte_logger.handlers):
+    for handler in list(openmem_logger.handlers):
         if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
-            termyte_logger.removeHandler(handler)
+            openmem_logger.removeHandler(handler)
             handler.close()
-    for handler in list(termyte_logger.handlers):
+    for handler in list(openmem_logger.handlers):
         if getattr(handler, "_longmemeval_log", False):
-            termyte_logger.removeHandler(handler)
+            openmem_logger.removeHandler(handler)
             handler.close()
     mode = "a" if append else "w"
     engine_file_handler = logging.FileHandler(log_path, mode=mode, encoding="utf-8")
     engine_file_handler._longmemeval_log = True  # type: ignore[attr-defined]
     engine_file_handler.setLevel(logging.INFO)
     engine_file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    termyte_logger.addHandler(engine_file_handler)
+    openmem_logger.addHandler(engine_file_handler)
 
     _BENCHMARK_LOGGER.setLevel(logging.INFO)
     _BENCHMARK_LOGGER.propagate = False
@@ -257,12 +257,12 @@ def shared_embedder() -> GuardedEmbedder:
 
 def shared_product_embedder(args: argparse.Namespace) -> GuardedEmbedder:
     global _product_embedder, _product_embedder_key
-    configured_provider = getattr(args, "embedding_provider", None) or os.environ.get("TERMYTEDB_EMBEDDING_PROVIDER")
-    model_name = getattr(args, "embedding_model", None) or os.environ.get("TERMYTEDB_EMBEDDING_MODEL")
+    configured_provider = getattr(args, "embedding_provider", None) or os.environ.get("OPENMEM_EMBEDDING_PROVIDER")
+    model_name = getattr(args, "embedding_model", None) or os.environ.get("OPENMEM_EMBEDDING_MODEL")
     provider_name = configured_provider or ("openrouter" if model_name else "local")
     dimensions = getattr(args, "embedding_dimensions", None)
     if dimensions is None and provider_name == "openrouter":
-        dimensions = int(os.environ.get("TERMYTEDB_EMBEDDING_DIMENSIONS", "1536"))
+        dimensions = int(os.environ.get("OPENMEM_EMBEDDING_DIMENSIONS", "1536"))
     key = (provider_name, model_name, dimensions)
     if _product_embedder is None or _product_embedder_key != key:
         with _product_embedder_lock:
@@ -309,7 +309,7 @@ def rerank_hits(query: str, hits: list[AtomHit], threshold: float, *, max_candid
 
 
 def rerank_memory_hits(query: str, hits: list[Any], threshold: float, *, max_candidates: int = 30, max_chars: int = 600) -> list[Any] | None:
-    """FlashRank rerank for TermyteDB SearchResult objects."""
+    """FlashRank rerank for OpenMem SearchResult objects."""
     return _rerank(
         query,
         hits,
@@ -549,9 +549,9 @@ def build_provider(args: argparse.Namespace):
     if name == "openrouter":
         from src.memory.provider import OpenRouterExtractionProvider  # noqa: E402
 
-        model = getattr(args, "extraction_model", None) or os.environ.get("TERMYTEDB_EXTRACTION_MODEL")
+        model = getattr(args, "extraction_model", None) or os.environ.get("OPENMEM_EXTRACTION_MODEL")
         if not model:
-            raise ValueError("TERMYTEDB_EXTRACTION_MODEL or --extraction-model is required")
+            raise ValueError("OPENMEM_EXTRACTION_MODEL or --extraction-model is required")
         provider = OpenRouterExtractionProvider(model=model)
         return RateLimitedExtractionProvider(
             provider,
@@ -646,7 +646,7 @@ def _run_manifest(args: argparse.Namespace, data_path: Path, dataset_sha256: str
         "embedding_provider": getattr(args, "embedding_provider", None),
         "embedding_model": getattr(args, "embedding_model", None),
         "embedding_dimensions": getattr(args, "embedding_dimensions", None),
-        "reranking_model": _os.environ.get("TERMYTEDB_RERANKING_MODEL") or "ms-marco-MiniLM-L-12-v2",
+        "reranking_model": _os.environ.get("OPENMEM_RERANKING_MODEL") or "ms-marco-MiniLM-L-12-v2",
         "extraction_batch_sessions": int(getattr(args, "extraction_batch_sessions", 4)),
         "single_db": bool(getattr(args, "single_db", False)),
         "no_dense": bool(getattr(args, "no_dense", False)),
@@ -658,7 +658,7 @@ def _run_manifest(args: argparse.Namespace, data_path: Path, dataset_sha256: str
         "raw_session_fallback": bool(getattr(args, "raw_session_fallback", False)),
         "sample_retries": int(getattr(args, "sample_retries", 2)),
         "abstain_threshold": float(getattr(args, "abstain_threshold", 0.25)),
-        "extraction_schema": _os.environ.get("TERMYTEDB_EXTRACTION_SCHEMA", "v2"),
+        "extraction_schema": _os.environ.get("OPENMEM_EXTRACTION_SCHEMA", "v2"),
         "workers": int(getattr(args, "workers", 4)),
         "dataset_hash": dataset_sha256,
     }
@@ -705,7 +705,7 @@ def ingest_e2e(work_dir: Path, sample: Sample, args: argparse.Namespace) -> tupl
 
     Returns (database_path, diagnostics).
     """
-    from src import EventInput, TermyteDB  # noqa: E402
+    from src import EventInput, OpenMem  # noqa: E402
 
     single_db = bool(getattr(args, "single_db", False))
     database_path = _e2e_database_path(work_dir, sample, single_db)
@@ -718,7 +718,7 @@ def ingest_e2e(work_dir: Path, sample: Sample, args: argparse.Namespace) -> tupl
     lock = _single_db_lock if single_db else threading.Lock()
     # Serialize direct ingestion for a shared SQLite file.
     with lock:
-        engine = TermyteDB(database_path, extraction_provider=provider, embedding_provider=embedding_provider)  # type: ignore[arg-type]
+        engine = OpenMem(database_path, extraction_provider=provider, embedding_provider=embedding_provider)  # type: ignore[arg-type]
         try:
             events_raw = build_event_inputs(sample)
             # Filter to EventInput for validation
@@ -814,11 +814,11 @@ def ingest_e2e(work_dir: Path, sample: Sample, args: argparse.Namespace) -> tupl
 
 def retrieve_e2e_session_ranking(database_path: Path, sample: Sample, args: argparse.Namespace) -> dict[str, Any]:
     """Retrieve after direct ingestion using production memories."""
-    from src import TermyteDB  # noqa: E402
+    from src import OpenMem  # noqa: E402
 
     ns = sample.question_id
     provider = build_provider(args)
-    engine = TermyteDB(database_path, extraction_provider=provider, embedding_provider=shared_product_embedder(args))  # type: ignore[arg-type]
+    engine = OpenMem(database_path, extraction_provider=provider, embedding_provider=shared_product_embedder(args))  # type: ignore[arg-type]
     started = time.perf_counter()
     try:
         limit = max(args.recall_k * 10, 50)
@@ -1657,9 +1657,9 @@ def run(args: argparse.Namespace) -> int:
             args.embedding_provider = "openrouter"
         print(
             "End-to-end providers: "
-            f"extraction=openrouter ({getattr(args, 'extraction_model', None) or os.environ.get('TERMYTEDB_EXTRACTION_MODEL', 'unset')}), "
-            f"embeddings=openrouter ({getattr(args, 'embedding_model', None) or os.environ.get('TERMYTEDB_EMBEDDING_MODEL', 'unset')}, "
-            f"dimensions={getattr(args, 'embedding_dimensions', None) or os.environ.get('TERMYTEDB_EMBEDDING_DIMENSIONS', 'default')})",
+            f"extraction=openrouter ({getattr(args, 'extraction_model', None) or os.environ.get('OPENMEM_EXTRACTION_MODEL', 'unset')}), "
+            f"embeddings=openrouter ({getattr(args, 'embedding_model', None) or os.environ.get('OPENMEM_EMBEDDING_MODEL', 'unset')}, "
+            f"dimensions={getattr(args, 'embedding_dimensions', None) or os.environ.get('OPENMEM_EMBEDDING_DIMENSIONS', 'default')})",
             flush=True,
         )
         _openrouter_pacer = RequestPacer(float(getattr(args, "openrouter_min_interval", 3.0)))
@@ -1806,7 +1806,7 @@ def run(args: argparse.Namespace) -> int:
             "reranker": (
                 None
                 if args.no_rerank
-                else os.environ.get("TERMYTEDB_RERANKING_MODEL") or "ms-marco-MiniLM-L-12-v2"
+                else os.environ.get("OPENMEM_RERANKING_MODEL") or "ms-marco-MiniLM-L-12-v2"
             ),
             "dense_enabled": not args.no_dense,
             "workers": args.workers,
@@ -1833,7 +1833,7 @@ def hashlib_sha256(payload: bytes) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="TermyteDB LongMemEval-S benchmark")
+    parser = argparse.ArgumentParser(description="OpenMem LongMemEval-S benchmark")
     parser.add_argument("--baseline", choices=("system", "oracle", "full-history"), default="system", help="evaluation baseline")
     parser.add_argument(
         "--mode",
@@ -1847,7 +1847,7 @@ def main() -> int:
         action="store_true",
         help="use longmemeval-micro (30 samples, 5 per category) instead of full 500; ~94%% cheaper/faster",
     )
-    parser.add_argument("--work-dir", default=str(ROOT / ".termytedb-work" / "longmemeval"))
+    parser.add_argument("--work-dir", default=str(ROOT / ".openmem-work" / "longmemeval"))
     parser.add_argument("--results-dir", default=str(ROOT / "results"))
     parser.add_argument("--log-file", type=Path, help="path for detailed benchmark and engine logs (default: <work-dir>/benchmark.log)")
     parser.add_argument("--limit", type=int, help="limit number of questions (for smoke tests)")
@@ -1881,7 +1881,7 @@ def main() -> int:
         default="openrouter",
         help="extraction provider for end-to-end mode (OpenRouter is the product default)",
     )
-    parser.add_argument("--extraction-model", type=str, default=None, help="model for openrouter/http extraction (or env TERMYTEDB_EXTRACTION_MODEL)")
+    parser.add_argument("--extraction-model", type=str, default=None, help="model for openrouter/http extraction (or env OPENMEM_EXTRACTION_MODEL)")
     parser.add_argument("--extraction-batch-sessions", type=int, default=4, help="maximum complete sessions per extraction call")
     parser.add_argument("--extraction-batch-max-chars", type=int, default=24000, help="split extraction batches above this source-text size")
     parser.add_argument("--raw-session-fallback", action="store_true", help="include raw-session search in hybrid results; off for memory-only scoring")

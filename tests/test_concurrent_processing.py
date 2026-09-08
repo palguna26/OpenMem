@@ -1,11 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
-from src import TermyteDB
+from src import OpenMem
 
 
 def test_concurrent_direct_ingestion_on_one_engine_is_safe(tmp_path):
-    db = TermyteDB(tmp_path / "direct.sqlite")
+    db = OpenMem(tmp_path / "direct.sqlite")
     namespaces = [f"worker-{index}" for index in range(4)]
 
     def ingest(namespace_id: str) -> None:
@@ -32,8 +32,8 @@ def test_concurrent_direct_ingestion_on_one_engine_is_safe(tmp_path):
 
 def test_separate_connections_reinforce_memory_without_version_conflicts(tmp_path):
     path = tmp_path / "same-memory.sqlite"
-    owner = TermyteDB(path)
-    workers = [TermyteDB(path) for _ in range(2)]
+    owner = OpenMem(path)
+    workers = [OpenMem(path) for _ in range(2)]
     barrier = Barrier(2)
 
     def ingest(index: int) -> None:

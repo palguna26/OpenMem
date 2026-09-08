@@ -26,7 +26,7 @@ from .storage.db import Database
 from .storage.repository import Repository
 
 
-class TermyteDB:
+class OpenMem:
     """Embedded memory engine - simple facade over EventStore + MemoryStore + HybridRetriever.
 
     Core API:
@@ -35,7 +35,7 @@ class TermyteDB:
       get_memory / memories  - read with temporal {valid_from, valid_until}
       update / invalidate / forget / restore - manage memory lifecycle
     Everything below `--- Extended / Debug ---` is backward-compat for tests/benchmarks.
-    TermyteDB returns memories. The caller decides how those memories become model context.
+    OpenMem returns memories. The caller decides how those memories become model context.
     """
 
     MAX_EVENT_BYTES = 1_048_576

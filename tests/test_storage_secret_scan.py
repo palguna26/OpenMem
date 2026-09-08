@@ -1,12 +1,12 @@
 from pathlib import Path
 
-from src import TermyteDB
+from src import OpenMem
 
 
 def test_redacted_secret_is_absent_from_sqlite_files(tmp_path: Path):
     secret = "WAL-ONLY-SUPERSECRET-8f2c"
     database_path = tmp_path / "secrets.sqlite"
-    db = TermyteDB(database_path)
+    db = OpenMem(database_path)
     db.ingest(
         {
             "namespace_id": "storage-scan",

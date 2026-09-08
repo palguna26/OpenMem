@@ -47,8 +47,8 @@ def test_pack_atoms_enforces_token_budget_after_headers():
 
 
 def test_pack_evidence_reports_words_tokens_and_mode(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_ALLOW_FAKE_EXTRACTION", "1")
-    from src import TermyteDB
+    monkeypatch.setenv("OPENMEM_ALLOW_FAKE_EXTRACTION", "1")
+    from src import OpenMem
     from tests.conftest import event
 
     class _Emb:
@@ -61,7 +61,7 @@ def test_pack_evidence_reports_words_tokens_and_mode(tmp_path, monkeypatch):
         def embed_many(self, values: list[str]) -> list[list[float]]:
             return [[0.1, 0.2] for _ in values]
 
-    db = TermyteDB(tmp_path / "pack-words.sqlite", embedding_provider=_Emb())
+    db = OpenMem(tmp_path / "pack-words.sqlite", embedding_provider=_Emb())
     for i in range(3):
         db.ingest(event("ns1", f"k{i}", f"I prefer SQLite for local project number {i}."))
     memories = db.search("ns1", "SQLite", limit=5)
@@ -183,8 +183,8 @@ def test_question_dates_near_version_boundaries():
 
 
 def test_repository_temporal_scoring_uses_reference_date(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_ALLOW_FAKE_EXTRACTION", "1")
-    from src import TermyteDB
+    monkeypatch.setenv("OPENMEM_ALLOW_FAKE_EXTRACTION", "1")
+    from src import OpenMem
     from tests.conftest import event
 
     class _Emb:
@@ -198,7 +198,7 @@ def test_repository_temporal_scoring_uses_reference_date(tmp_path, monkeypatch):
         def embed_many(self, values: list[str]) -> list[list[float]]:
             return [self.embed(v) for v in values]
 
-    db = TermyteDB(tmp_path / "temporal.sqlite", embedding_provider=_Emb())
+    db = OpenMem(tmp_path / "temporal.sqlite", embedding_provider=_Emb())
     # Fixed event dates keep validity fixed relative to the fixed reference,
     # so this test never expires as the calendar advances (no 2030 hack).
     e1 = {**event("ns1", "k1", "User lives in Delhi."), "occurred_at": "2023-04-01T00:00:00+00:00"}
@@ -245,7 +245,7 @@ def test_preference_extraction_rules_cover_updates_and_negatives():
 
 
 def test_query_weights_detects_preference():
-    from src import TermyteDB
+    from src import OpenMem
 
     class _Emb:
         name = "test-v1"
@@ -261,7 +261,7 @@ def test_query_weights_detects_preference():
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as td:
-        db = TermyteDB(Path(td) / "w.sqlite", embedding_provider=_Emb())
+        db = OpenMem(Path(td) / "w.sqlite", embedding_provider=_Emb())
         qw = db.repository._query_weights("What do I prefer for photography?")
         assert qw["is_preference"] == 1.0
         assert qw["vector"] > 1.0
@@ -277,10 +277,10 @@ def test_preference_atom_boost():
 
 
 def test_repository_preference_boost_in_scores(tmp_path, monkeypatch):
-    from src import TermyteDB
+    from src import OpenMem
     from tests.conftest import event
 
-    monkeypatch.setenv("TERMYTEDB_ALLOW_FAKE_EXTRACTION", "1")
+    monkeypatch.setenv("OPENMEM_ALLOW_FAKE_EXTRACTION", "1")
 
     class _Emb:
         name = "test-v1"
@@ -293,7 +293,7 @@ def test_repository_preference_boost_in_scores(tmp_path, monkeypatch):
         def embed_many(self, values: list[str]) -> list[list[float]]:
             return [self.embed(v) for v in values]
 
-    db = TermyteDB(tmp_path / "pref.sqlite", embedding_provider=_Emb())
+    db = OpenMem(tmp_path / "pref.sqlite", embedding_provider=_Emb())
     db.ingest(event("ns1", "k1", "I prefer Sony-compatible accessories for photography."))
     db.ingest(event("ns1", "k2", "The shop sells Canon cameras."))
     results = db.search("ns1", "What photography accessories do I prefer?", limit=5)
@@ -330,8 +330,8 @@ def test_aggregate_single_session_keeps_precision():
 
 
 def test_multi_session_evidence_share_cap(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_ALLOW_FAKE_EXTRACTION", "1")
-    from src import TermyteDB
+    monkeypatch.setenv("OPENMEM_ALLOW_FAKE_EXTRACTION", "1")
+    from src import OpenMem
     from tests.conftest import event
 
     class _Emb:
@@ -344,7 +344,7 @@ def test_multi_session_evidence_share_cap(tmp_path, monkeypatch):
         def embed_many(self, values: list[str]) -> list[list[float]]:
             return [[0.5, 0.5] for _ in values]
 
-    db = TermyteDB(tmp_path / "multi.sqlite", embedding_provider=_Emb())
+    db = OpenMem(tmp_path / "multi.sqlite", embedding_provider=_Emb())
     for i in range(4):
         db.ingest(event("ns1", f"k{i}", f"Session marker {i} across timeline discussion point {i}."))
     results = db.search("ns1", "Compare across all sessions each timeline point", limit=6)

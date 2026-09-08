@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from src import TermyteDB
+from src import OpenMem
 from src.memory.provider import ProviderError, ProviderResult
 from src.models import EvidenceSpan, ExtractionCandidate, ExtractionResponse
 
@@ -293,14 +293,14 @@ def _event(ns, key, text, stream_id=None):
 
 
 def run_direct(tmp_path: Path, provider, events, name="t.sqlite"):
-    db = TermyteDB(tmp_path / name, extraction_provider=provider, embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / name, extraction_provider=provider, embedding_provider=RecordingEmbedding())
     result = db.ingest_batch(events)
     return db, result
 
 
 def run_queued(tmp_path: Path, provider, events, name="t.sqlite"):
     """Exercise process_namespace via a failing direct ingest then provider swap."""
-    db = TermyteDB(tmp_path / name, extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / name, extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
     for ev in events:
         with pytest.raises(ProviderError):
             db.ingest(ev)
@@ -401,7 +401,7 @@ def test_cross_namespace_real_event_rejected_by_both(tmp_path: Path):
     foreign_excerpt = n2_text[:5]
 
     # Direct: seed n2 (valid), then swap to cross-namespace provider for n1.
-    db = TermyteDB(tmp_path / "d-cross.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "d-cross.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
         db.ingest(_event("n2", "k1", n2_text))
         foreign_id = UUID(_event_id(db, "n2", "k1"))
@@ -415,7 +415,7 @@ def test_cross_namespace_real_event_rejected_by_both(tmp_path: Path):
     finally:
         db.close()
     # Queued: same database, n1 via failing ingest then retry with cross-namespace cite.
-    db2 = TermyteDB(tmp_path / "q-cross.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
+    db2 = OpenMem(tmp_path / "q-cross.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
         db2.ingest(_event("n2", "k1", n2_text))
         foreign_id2 = UUID(_event_id(db2, "n2", "k1"))
@@ -440,7 +440,7 @@ def test_context_only_source_rejected_by_both(tmp_path: Path):
     prior = {**_event("n1", "k1", "I prefer SQLite for local storage."), "stream_id": "s1"}
     current = {**_event("n1", "k2", "Constraint: deploy the SQLite service in India region."), "stream_id": "s1"}
 
-    db = TermyteDB(tmp_path / "ctx-seed-d.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "ctx-seed-d.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
         db.ingest(prior)
         db.processor.provider = ContextOnlyProvider()
@@ -450,7 +450,7 @@ def test_context_only_source_rejected_by_both(tmp_path: Path):
         assert "evidence_not_in_ingestion_batch" in _rejection_reasons(db, "n1")
     finally:
         db.close()
-    db1 = TermyteDB(tmp_path / "ctx-q.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
+    db1 = OpenMem(tmp_path / "ctx-q.sqlite", extraction_provider=ValidProvider(), embedding_provider=RecordingEmbedding())
     try:
         db1.ingest(prior)
         db1.processor.provider = FailingProvider()
@@ -518,7 +518,7 @@ def test_valid_evidence_accepted_with_citations_by_both(tmp_path: Path):
 def test_provider_failure_then_queued_retry_succeeds_without_duplication(tmp_path: Path):
     text = "I prefer SQLite for local storage."
     expected_excerpt = text[:60]
-    db = TermyteDB(tmp_path / "retry.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "retry.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
     try:
         with pytest.raises(ProviderError) as exc:
             db.ingest(_event("n1", "k1", text))
@@ -544,7 +544,7 @@ def test_provider_failure_then_queued_retry_succeeds_without_duplication(tmp_pat
 
 
 def test_retry_with_missing_evidence_rejected_without_memory(tmp_path: Path):
-    db = TermyteDB(tmp_path / "retrymiss.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "retrymiss.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
     try:
         with pytest.raises(ProviderError):
             db.ingest(_event("n1", "k1", "I prefer SQLite for local storage."))
@@ -609,10 +609,10 @@ def _v3_factory_spanning(request):
 
 
 def test_v3_context_only_rejected_both_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
     prior = {**_event("n1", "k1", "I prefer SQLite for local storage."), "stream_id": "s1"}
     current = {**_event("n1", "k2", "Constraint: deploy the SQLite service in India region."), "stream_id": "s1"}
-    db = TermyteDB(tmp_path / "v3-ctx-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "v3-ctx-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
     try:
         seed = db.ingest(prior)
         assert seed.accepted == 1 and seed.rejected == 0
@@ -623,14 +623,14 @@ def test_v3_context_only_rejected_both_paths(tmp_path: Path, monkeypatch: pytest
         assert "context_only_source" in _rejection_reasons(db, "n1")
     finally:
         db.close()
-    db2 = TermyteDB(tmp_path / "v3-ctx-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    db2 = OpenMem(tmp_path / "v3-ctx-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
     try:
         seed = db2.ingest(prior)
         assert seed.accepted == 1
         db2.processor.provider = FailingProvider()
         with pytest.raises(ProviderError):
             db2.ingest(current)
-        monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+        monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
         db2.processor.provider = V3Provider(_v3_factory_context_only)
         resp = db2.process("n1")
         assert resp.processed == 1 and resp.failed == 0 and resp.dead_lettered == 0
@@ -652,7 +652,7 @@ def test_v3_spanning_selects_extractable_source_both_paths(tmp_path: Path, monke
     ``reconcile_candidate`` event) == extractable current separately from the
     persisted ``source_event_id`` == first-cited prior.
     """
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
     prior_text = "I prefer SQLite for local storage."
     current_text = "Constraint: deploy the SQLite service in India region."
     prior_occurred = "2023-04-01T00:00:00+00:00"
@@ -702,7 +702,7 @@ def test_v3_spanning_selects_extractable_source_both_paths(tmp_path: Path, monke
         assert str(ver["source_event_id"]) == prior_eid
         assert str(ver["observed_at"]) == current_occurred
 
-    db = TermyteDB(tmp_path / "v3-span-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "v3-span-d.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
     try:
         seed = db.ingest(prior)
         assert seed.accepted == 1 and seed.rejected == 0
@@ -713,14 +713,14 @@ def test_v3_spanning_selects_extractable_source_both_paths(tmp_path: Path, monke
         _check_spanning(db, _event_id(db, "n1", "k2"), _event_id(db, "n1", "k1"), seen)
     finally:
         db.close()
-    db2 = TermyteDB(tmp_path / "v3-span-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
+    db2 = OpenMem(tmp_path / "v3-span-q.sqlite", extraction_provider=V3Provider(_v3_factory_valid), embedding_provider=RecordingEmbedding())
     try:
         seed = db2.ingest(prior)
         assert seed.accepted == 1
         db2.processor.provider = FailingProvider()
         with pytest.raises(ProviderError):
             db2.ingest(current)
-        monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+        monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
         db2.processor.provider = V3Provider(_v3_factory_spanning)
         seen2 = _install_spy(db2)
         resp = db2.process("n1")

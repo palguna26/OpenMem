@@ -33,11 +33,11 @@ def consolidate(repository: Repository, namespace_id: str, *, limit: int = 5, mo
             ).fetchall()
             included: dict[uuid.UUID, str] = {}
             for event in events:
-                text = payload_text({**json.loads(event["payload_json"]), "__termytedb_event_type": event["type"]})
+                text = payload_text({**json.loads(event["payload_json"]), "__openmem_event_type": event["type"]})
                 included[uuid.UUID(event["id"])] = text
             for event in events:
                 source = included[uuid.UUID(event["id"])]
-                for rule in extract({**json.loads(event["payload_json"]), "__termytedb_event_type": event["type"]}):
+                for rule in extract({**json.loads(event["payload_json"]), "__openmem_event_type": event["type"]}):
                     candidate = rule_candidate_to_contract(rule, uuid.UUID(event["id"]), source)
                     proposal = {
                         "episode_id": episode_id,

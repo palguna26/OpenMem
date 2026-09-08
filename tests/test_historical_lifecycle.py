@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from src import TermyteDB
+from src import OpenMem
 
 from .conftest import event
 
@@ -35,17 +35,17 @@ class ConstantEmbedding:
         return [[1.0, 0.0] for _ in values]
 
 
-def make_db(tmp_path: Path, name: str = "t.sqlite") -> TermyteDB:
-    return TermyteDB(tmp_path / name, embedding_provider=ConstantEmbedding())
+def make_db(tmp_path: Path, name: str = "t.sqlite") -> OpenMem:
+    return OpenMem(tmp_path / name, embedding_provider=ConstantEmbedding())
 
 
-def _memory_id(db: TermyteDB, namespace: str) -> str:
+def _memory_id(db: OpenMem, namespace: str) -> str:
     memories = db.memories(namespace)
     assert memories, "expected at least one memory"
     return str(memories[0].memory_id)
 
 
-def _version_id(db: TermyteDB, namespace: str, memory_id: str) -> str:
+def _version_id(db: OpenMem, namespace: str, memory_id: str) -> str:
     row = db.database.execute(
         "SELECT current_version_id FROM memories WHERE id=? AND namespace_id=?",
         (memory_id, namespace),

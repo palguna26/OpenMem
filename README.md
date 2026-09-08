@@ -1,6 +1,6 @@
-# TermyteDB
+# OpenMem
 
-TermyteDB is an embedded memory engine for AI agents. It stores conversation events in SQLite, extracts durable memories with evidence, reconciles updates, and retrieves relevant memories via search. TermyteDB returns memories — the caller decides how those memories become model context.
+OpenMem is an embedded memory engine for AI agents. It stores conversation events in SQLite, extracts durable memories with evidence, reconciles updates, and retrieves relevant memories via search. OpenMem returns memories — the caller decides how those memories become model context.
 
 ## Install
 
@@ -14,11 +14,11 @@ python -m pytest
 Provider is explicit. Use `FakeExtractionProvider` for offline/tests and `OpenRouterExtractionProvider` in production.
 
 ```python
-from src import TermyteDB
+from src import OpenMem
 from src.memory.provider import FakeExtractionProvider
 
 # Offline / tests (no network, single LLM call per ingest by default)
-db = TermyteDB("memory.sqlite", extraction_provider=FakeExtractionProvider())
+db = OpenMem("memory.sqlite", extraction_provider=FakeExtractionProvider())
 db.ingest({
     "namespace_id": "demo",
     "idempotency_key": "event-1",
@@ -35,19 +35,19 @@ Production:
 
 ```python
 import os
-from src import TermyteDB
+from src import OpenMem
 from src.memory.provider import OpenRouterExtractionProvider
 
-db = TermyteDB(
+db = OpenMem(
     "memory.sqlite",
     extraction_provider=OpenRouterExtractionProvider(
-        model=os.environ["TERMYTEDB_EXTRACTION_MODEL"],
+        model=os.environ["OPENMEM_EXTRACTION_MODEL"],
         api_key=os.environ["OPENROUTER_API_KEY"],
     ),
 )
 # Extraction uses one Mem0-style LLM call per batch and returns a small
 # {"memory": ["..."]} list. Optional LLM reconciliation is off by default.
-# os.environ["TERMYTEDB_RECONCILIATION_ENABLED"] = "1"
+# os.environ["OPENMEM_RECONCILIATION_ENABLED"] = "1"
 db.ingest({
     "namespace_id": "demo",
     "idempotency_key": "event-1",

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make the LongMemEval end-to-end benchmark reliably measure TermyteDB's direct synchronous ingestion workflow without flooding OpenRouter or reporting invalid scores.
+Make the LongMemEval end-to-end benchmark reliably measure OpenMem's direct synchronous ingestion workflow without flooding OpenRouter or reporting invalid scores.
 
 ## Changes
 

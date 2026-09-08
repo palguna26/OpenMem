@@ -1,4 +1,4 @@
-"""TermyteDB centralized configuration.
+"""OpenMem centralized configuration.
 
 Import configurables from here:
 

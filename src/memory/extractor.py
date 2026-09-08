@@ -17,7 +17,7 @@ class Candidate:
 
 
 IGNORED_KEYS = {
-    "__termytedb_event_type",
+    "__openmem_event_type",
     "tool_name",
     "command",
     "cmd",

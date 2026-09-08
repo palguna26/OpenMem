@@ -89,7 +89,7 @@ _RERANKERS: dict[str, Any] = {}
 
 def _configured_openrouter_reranker() -> str | None:
     """Return the optional remote reranker model without changing local defaults."""
-    value = os.environ.get("TERMYTEDB_RERANKING_MODEL", "").strip()
+    value = os.environ.get("OPENMEM_RERANKING_MODEL", "").strip()
     return value or None
 
 
@@ -100,19 +100,19 @@ def _openrouter_rerank(query: str, passages: list[dict[str, str]], model: str) -
     use local FlashRank, so remote reranking cannot make search unavailable.
     """
     api_key = (
-        os.environ.get("TERMYTEDB_RERANKING_API_KEY")
+        os.environ.get("OPENMEM_RERANKING_API_KEY")
         or os.environ.get("OPENROUTER_API_KEY")
-        or os.environ.get("TERMYTEDB_EXTRACTION_API_KEY")
+        or os.environ.get("OPENMEM_EXTRACTION_API_KEY")
     )
     if not api_key or not passages:
         return None
     base_url = (
-        os.environ.get("TERMYTEDB_RERANKING_BASE_URL")
+        os.environ.get("OPENMEM_RERANKING_BASE_URL")
         or os.environ.get("OPENROUTER_BASE_URL")
         or "https://openrouter.ai/api/v1"
     ).rstrip("/")
     try:
-        timeout = max(1.0, float(os.environ.get("TERMYTEDB_RERANKING_TIMEOUT_SECONDS", "30")))
+        timeout = max(1.0, float(os.environ.get("OPENMEM_RERANKING_TIMEOUT_SECONDS", "30")))
     except ValueError:
         timeout = 30.0
     body = {
@@ -129,8 +129,8 @@ def _openrouter_rerank(query: str, passages: list[dict[str, str]], model: str) -
                 headers={
                     "authorization": f"Bearer {api_key}",
                     "content-type": "application/json",
-                    "http-referer": "https://termyte.dev",
-                    "X-OpenRouter-Title": "TermyteDB Memory Reranking",
+                    "http-referer": "https://openmem.dev",
+                    "X-OpenRouter-Title": "OpenMem Memory Reranking",
                 },
                 method="POST",
             ),
@@ -170,7 +170,7 @@ def iso(value: datetime | None = None) -> str:
 
 
 def stable_uuid(namespace_id: str, idempotency_key: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"termytedb:event:{namespace_id}:{idempotency_key}"))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"openmem:event:{namespace_id}:{idempotency_key}"))
 
 
 def hash_text(value: str) -> str:
@@ -354,7 +354,7 @@ class Repository:
             payload_json = json.dumps(redacted_payload, sort_keys=True, separators=(",", ":"))
             content_hash = hash_text(canonical_event_content(event, redacted_payload))
             occurred = iso(event.occurred_at)
-            observation_text = payload_text({**redacted_payload, "__termytedb_event_type": event.type})
+            observation_text = payload_text({**redacted_payload, "__openmem_event_type": event.type})
             prior_count = (
                 int(
                     self.db.execute(
@@ -479,7 +479,7 @@ class Repository:
                 selected = row
                 break
         if selected is None:
-            episode_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"termytedb:episode:{namespace_id}:{event_id}"))
+            episode_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"openmem:episode:{namespace_id}:{event_id}"))
             self.db.execute(
                 """INSERT INTO episodes(id, namespace_id, stream_id, start_event_id, end_event_id, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -546,7 +546,7 @@ class Repository:
         snippets: list[str] = []
         seen: set[str] = set()
         for row in rows:
-            text = payload_text({**json.loads(row["payload_json"]), "__termytedb_event_type": row["type"]})
+            text = payload_text({**json.loads(row["payload_json"]), "__openmem_event_type": row["type"]})
             text = " ".join(text.split())
             if not text:
                 continue
@@ -2913,7 +2913,7 @@ class Repository:
         # directly; ingest now skips the 3-entity upsert + 2 relationships.
         import os
 
-        if os.environ.get("TERMYTEDB_ENABLE_GRAPH", "0") not in {"1", "true", "True"}:
+        if os.environ.get("OPENMEM_ENABLE_GRAPH", "0") not in {"1", "true", "True"}:
             return
         subject_entity = self.upsert_entity(namespace_id, f"subject:{subject_key}", subject_key, "memory-subject", 1.0)
         memory_entity = self.upsert_entity(namespace_id, f"memory-version:{memory_version_id}", statement[:120], "memory-version", 1.0)

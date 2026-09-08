@@ -28,19 +28,19 @@ def _get_extraction_stages() -> list[str]:
 def _is_reconciliation_enabled() -> bool:
     # Simple extraction is deliberately one LLM call. Reconciliation remains
     # available as an explicit opt-in for applications that need it.
-    raw = os.environ.get("TERMYTEDB_RECONCILIATION_ENABLED", "0")
+    raw = os.environ.get("OPENMEM_RECONCILIATION_ENABLED", "0")
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _get_extraction_schema() -> str:
-    raw = os.environ.get("TERMYTEDB_EXTRACTION_SCHEMA", "v2").strip().lower()
+    raw = os.environ.get("OPENMEM_EXTRACTION_SCHEMA", "v2").strip().lower()
     if raw in {"v3", "extraction-v3", "extraction_v3", "3"}:
         return "v3"
     return "v2"
 
 
 def _get_max_calls() -> int:
-    raw = os.environ.get("TERMYTEDB_MAX_LLM_CALLS_PER_BATCH")
+    raw = os.environ.get("OPENMEM_MAX_LLM_CALLS_PER_BATCH")
     if raw is None:
         return 10
 
@@ -1211,8 +1211,8 @@ class Processor:
 
     @staticmethod
     def _estimated_cost(input_tokens: int | None, output_tokens: int | None) -> float | None:
-        input_rate = os.environ.get("TERMYTEDB_INPUT_COST_PER_1K_USD")
-        output_rate = os.environ.get("TERMYTEDB_OUTPUT_COST_PER_1K_USD")
+        input_rate = os.environ.get("OPENMEM_INPUT_COST_PER_1K_USD")
+        output_rate = os.environ.get("OPENMEM_OUTPUT_COST_PER_1K_USD")
         if input_tokens is None or output_tokens is None or input_rate is None or output_rate is None:
             return None
         try:

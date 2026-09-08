@@ -8,7 +8,7 @@ __pycache__/
 *.pyc
 .env
 .codex/
-.termytedb-work/
+.openmem-work/
 
 research/
 *.egg-info/

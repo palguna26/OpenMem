@@ -273,7 +273,7 @@ class MemoryStore:
         elif status == "contradicted":
             self.db.execute("UPDATE memories SET status='disputed' WHERE id=? AND namespace_id=?", (memory_id, namespace_id))
         self._persist_embedding(version_id, namespace_id, embedding, item.statement)
-        # Graph links are now opt-in (TERMYTEDB_ENABLE_GRAPH=1) to avoid write amplification.
+        # Graph links are now opt-in (OPENMEM_ENABLE_GRAPH=1) to avoid write amplification.
         return memory_id, action, version_id
 
     def memory_count(self, namespace_id: str) -> int:

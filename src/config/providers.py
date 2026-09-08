@@ -21,8 +21,8 @@ def get_extraction_provider(
 
     Resolution order (mirrors `memory.provider.configured_extraction_provider`):
     1. explicit `provider_name`
-    2. TERMYTEDB_EXTRACTION_PROVIDER env
-    3. HTTP endpoint if TERMYTEDB_EXTRACTION_URL is set
+    2. OPENMEM_EXTRACTION_PROVIDER env
+    3. HTTP endpoint if OPENMEM_EXTRACTION_URL is set
     4. OpenRouter if API key present
     5. Fake (offline / tests) as fallback
     """
@@ -46,10 +46,10 @@ def get_extraction_provider(
         return configured
 
     # Fallback used in tests / offline mode
-    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("TERMYTEDB_ALLOW_FAKE_EXTRACTION") == "1":
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("OPENMEM_ALLOW_FAKE_EXTRACTION") == "1":
         return FakeExtractionProvider()
 
-    raise ValueError("no extraction provider configured; set TERMYTEDB_EXTRACTION_URL or OPENROUTER_API_KEY")
+    raise ValueError("no extraction provider configured; set OPENMEM_EXTRACTION_URL or OPENROUTER_API_KEY")
 
 
 def get_summary_provider() -> SessionSummaryProvider:
@@ -57,7 +57,7 @@ def get_summary_provider() -> SessionSummaryProvider:
     from ..memory.provider import FakeSessionSummaryProvider, OpenRouterSessionSummaryProvider
 
     # Prefer OpenRouter summary if a key/model is configured, else fake
-    if os.environ.get("TERMYTEDB_SUMMARY_MODEL") or os.environ.get("TERMYTEDB_EXTRACTION_MODEL"):
+    if os.environ.get("OPENMEM_SUMMARY_MODEL") or os.environ.get("OPENMEM_EXTRACTION_MODEL"):
         try:
             return OpenRouterSessionSummaryProvider()
         except ValueError:
@@ -80,7 +80,7 @@ def get_embedding_provider(
         return FastEmbedProvider()
 
     # Auto: prefer remote if configured, else local
-    if os.environ.get("TERMYTEDB_EMBEDDING_MODEL"):
+    if os.environ.get("OPENMEM_EMBEDDING_MODEL"):
         try:
             return OpenAICompatibleEmbeddingProvider()
         except ValueError:

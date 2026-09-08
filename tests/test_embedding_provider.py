@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from src import TermyteDB
+from src import OpenMem
 from src.retrieval.embedding import OpenAICompatibleEmbeddingProvider, batch_dot, cosine, pack_embedding
 
 
@@ -16,7 +16,7 @@ class ConstantEmbedding:
 
 
 def test_embedding_provider_is_injectable_and_persisted(tmp_path):
-    db = TermyteDB(tmp_path / "embedding.sqlite", embedding_provider=ConstantEmbedding())
+    db = OpenMem(tmp_path / "embedding.sqlite", embedding_provider=ConstantEmbedding())
     db.ingest({"namespace_id": "embedding", "idempotency_key": "one", "type": "note", "payload": {"text": "Decision: target."}})
     db.process("embedding")
     row = db.database.execute("SELECT provider, dimensions FROM memory_embeddings WHERE namespace_id='embedding'").fetchone()
@@ -77,7 +77,7 @@ def test_openrouter_embedding_requests_configured_dimensions(monkeypatch):
 
 @pytest.mark.skipif(importlib.util.find_spec("sqlite_vec") is None, reason="sqlite-vec is not installed")
 def test_sqlite_vec_index_bootstraps_when_available(tmp_path):
-    db = TermyteDB(tmp_path / "embedding-index.sqlite", embedding_provider=ConstantEmbedding())
+    db = OpenMem(tmp_path / "embedding-index.sqlite", embedding_provider=ConstantEmbedding())
     db.ingest({"namespace_id": "embedding", "idempotency_key": "one", "type": "note", "payload": {"text": "Decision: target."}})
     db.process("embedding")
     row = db.database.execute("SELECT COUNT(*) FROM memory_embedding_index WHERE namespace_id=?", ("embedding",)).fetchone()

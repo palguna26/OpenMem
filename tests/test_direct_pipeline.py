@@ -1,7 +1,7 @@
 import pytest
 from uuid import uuid4
 
-from src import TermyteDB
+from src import OpenMem
 from src.memory.processor import _enforce_session_quality_budget, _prune_event_candidates
 from src.memory.provider import FakeExtractionProvider, ProviderError, ProviderResult
 from src.models import EvidenceSpan, ExtractionCandidate, ExtractionResponse
@@ -141,7 +141,7 @@ def test_v3_response_schema_allows_any_number_of_memories():
 def test_batch_is_one_extraction_call_and_indexes_chunks_and_memories(tmp_path):
     provider = RecordingProvider()
     embedding = RecordingEmbedding()
-    db = TermyteDB(tmp_path / "batch.sqlite", extraction_provider=provider, embedding_provider=embedding)
+    db = OpenMem(tmp_path / "batch.sqlite", extraction_provider=provider, embedding_provider=embedding)
 
     result = db.ingest_batch(
         [
@@ -172,9 +172,9 @@ def test_batch_is_one_extraction_call_and_indexes_chunks_and_memories(tmp_path):
 
 
 def test_single_extraction_call_stays_single_when_legacy_multistage_env_is_set(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_STAGES", "all")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_STAGES", "all")
     provider = RecordingProvider()
-    db = TermyteDB(tmp_path / "single-call.sqlite", extraction_provider=provider, embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "single-call.sqlite", extraction_provider=provider, embedding_provider=RecordingEmbedding())
 
     db.ingest({"namespace_id": "single", "idempotency_key": "one", "type": "decision", "payload": {"text": "Decision: use SQLite."}})
 
@@ -183,7 +183,7 @@ def test_single_extraction_call_stays_single_when_legacy_multistage_env_is_set(t
 
 
 def test_legacy_ungrounded_candidate_is_rejected(tmp_path):
-    db = TermyteDB(tmp_path / "simple.sqlite", extraction_provider=SimpleResultProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "simple.sqlite", extraction_provider=SimpleResultProvider(), embedding_provider=RecordingEmbedding())
 
     result = db.ingest({"namespace_id": "simple", "idempotency_key": "one", "type": "conversation", "payload": {"text": "I prefer SQLite for local storage."}})
 
@@ -205,7 +205,7 @@ def test_raw_session_search_survives_empty_memory_extraction(tmp_path):
                 input_tokens=1, output_tokens=1, latency_ms=1, stage="facts",
             )
 
-    db = TermyteDB(tmp_path / "raw-session.sqlite", extraction_provider=EmptyProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "raw-session.sqlite", extraction_provider=EmptyProvider(), embedding_provider=RecordingEmbedding())
     db.ingest({"namespace_id": "raw", "idempotency_key": "one", "type": "conversation", "stream_id": "s1", "payload": {"text": "My favorite database is SQLite."}})
 
     assert db.memories("raw") == []
@@ -217,7 +217,7 @@ def test_raw_session_search_survives_empty_memory_extraction(tmp_path):
 
 
 def test_memory_search_accepts_a_large_transcript_query(tmp_path):
-    db = TermyteDB(tmp_path / "large-query.sqlite", extraction_provider=SimpleResultProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "large-query.sqlite", extraction_provider=SimpleResultProvider(), embedding_provider=RecordingEmbedding())
     db.ingest({"namespace_id": "large", "idempotency_key": "one", "type": "conversation", "payload": {"text": "SQLite is used."}})
 
     # This previously produced more than 1,000 SQL OR expressions.
@@ -268,9 +268,9 @@ def _v3_candidate(statement, *, lifecycle="stable", state_key=None, labels=None)
 
 
 def test_v3_rejects_a_candidate_with_any_unknown_source_label(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
     provider = V3Provider(lambda _request: _v3_candidate("User likes tea.", labels=["e1", "made-up-event"]))
-    db = TermyteDB(tmp_path / "v3-unknown-label.sqlite", extraction_provider=provider, embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "v3-unknown-label.sqlite", extraction_provider=provider, embedding_provider=RecordingEmbedding())
 
     result = db.ingest({"namespace_id": "v3", "idempotency_key": "one", "type": "conversation", "payload": {"text": "I like tea."}})
 
@@ -282,13 +282,13 @@ def test_v3_rejects_a_candidate_with_any_unknown_source_label(tmp_path, monkeypa
 
 
 def test_v3_stable_observations_do_not_overwrite_each_other(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
 
     def factory(request):
         source = next(iter(request.evidence_text.values()))
         return _v3_candidate("User likes tea." if "tea" in source else "User owns a bicycle.")
 
-    db = TermyteDB(tmp_path / "v3-stable.sqlite", extraction_provider=V3Provider(factory), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "v3-stable.sqlite", extraction_provider=V3Provider(factory), embedding_provider=RecordingEmbedding())
     db.ingest({"namespace_id": "v3", "idempotency_key": "one", "type": "conversation", "payload": {"text": "I like tea."}})
     db.ingest({"namespace_id": "v3", "idempotency_key": "two", "type": "conversation", "payload": {"text": "I own a bicycle."}})
 
@@ -298,14 +298,14 @@ def test_v3_stable_observations_do_not_overwrite_each_other(tmp_path, monkeypatc
 
 
 def test_v3_current_state_only_replaces_an_older_observation(tmp_path, monkeypatch):
-    monkeypatch.setenv("TERMYTEDB_EXTRACTION_SCHEMA", "v3")
+    monkeypatch.setenv("OPENMEM_EXTRACTION_SCHEMA", "v3")
 
     def factory(request):
         source = next(iter(request.evidence_text.values()))
         city = "Delhi" if "Delhi" in source else "Mumbai"
         return _v3_candidate(f"User currently lives in {city}.", lifecycle="current", state_key="user.city")
 
-    db = TermyteDB(tmp_path / "v3-timeline.sqlite", extraction_provider=V3Provider(factory), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "v3-timeline.sqlite", extraction_provider=V3Provider(factory), embedding_provider=RecordingEmbedding())
     db.ingest({"namespace_id": "v3", "idempotency_key": "new", "type": "conversation", "occurred_at": "2025-02-01T00:00:00Z", "payload": {"text": "I currently live in Mumbai."}})
     db.ingest({"namespace_id": "v3", "idempotency_key": "old", "type": "conversation", "occurred_at": "2024-01-01T00:00:00Z", "payload": {"text": "I currently live in Delhi."}})
 
@@ -326,7 +326,7 @@ def test_context_packer_crops_an_oversized_grounded_chunk_to_the_token_budget():
 
 
 def test_provider_failure_keeps_evidence_without_partial_memories(tmp_path):
-    db = TermyteDB(tmp_path / "failure.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
+    db = OpenMem(tmp_path / "failure.sqlite", extraction_provider=FailingProvider(), embedding_provider=RecordingEmbedding())
 
     with pytest.raises(ProviderError, match="provider unavailable"):
         db.ingest(

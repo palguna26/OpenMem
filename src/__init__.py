@@ -1,6 +1,6 @@
-"""TermyteDB embedded memory engine."""
+"""OpenMem embedded memory engine."""
 
-from .engine import TermyteDB
+from .engine import OpenMem
 from .models import EventInput
 
-__all__ = ["EventInput", "TermyteDB"]
+__all__ = ["EventInput", "OpenMem"]

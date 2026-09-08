@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from src import TermyteDB
+from src import OpenMem
 
 
 @pytest.fixture
 def db(tmp_path: Path):
-    instance = TermyteDB(tmp_path / "termytedb.sqlite")
+    instance = OpenMem(tmp_path / "openmem.sqlite")
     yield instance
     instance.close()
 
